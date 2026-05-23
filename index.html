@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>太阳系桌球 - 星球撞击沙盒</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; user-select: none; }
+        canvas { display: block; }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.85);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 15px 25px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(4px);
+            max-width: 330px;
+            z-index: 10;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #fff; }
+        p { margin: 5px 0; font-size: 13px; line-height: 1.5; }
+        .highlight { color: #4DA8DA; font-weight: bold; }
+        .status { color: #00ff88; font-weight: bold; margin-top: 10px; border-top: 1px solid #444; padding-top: 10px;}
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>🎱 太阳系桌球沙盒</h1>
+        <p>🖱️ <span class="highlight">左键按住星球拖动</span>：拉弓瞄准</p>
+        <p>💥 <span class="highlight">松开左键</span>：发射星球撞击其他天体</p>
+        <p>📷 <span class="highlight">右键拖动空白处</span>：旋转视角</p>
+        <p>🔍 <span class="highlight">鼠标滚轮</span>：缩放距离</p>
+        <p class="status" id="sys-status">⏳ 正在初始化 3D 引擎...</p>
+        <p style="color: #ffcc00; font-weight: bold; font-size: 12px;">(拉得越远力度越大，星球间碰撞如桌球)</p>
+    </div>
+
+    <script src="https://cdn.staticfile.net/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.staticfile.net/cannon.js/0.6.2/cannon.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        window.onload = function() {
+            try {
+                if (typeof THREE === 'undefined') throw new Error("Three.js 核心库未加载。");
+                if (typeof CANNON === 'undefined') throw new Error("Cannon.js 物理引擎未加载。");
+                if (typeof THREE.OrbitControls === 'undefined') throw new Error("OrbitControls 视角控制库未加载。");
+
+                document.getElementById('sys-status').innerHTML = "✅ 状态：星球已就绪，选择一个星球开始发射吧！";
+
+                // ==========================================
+                // 场景初始化
+                // ==========================================
+                const scene = new THREE.Scene();
+                scene.fog = new THREE.FogExp2(0x000000, 0.0008);
+
+                const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 3000);
+                camera.position.set(0, 180, 300);
+
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                document.body.appendChild(renderer.domElement);
+
+                // OrbitControls: 右键旋转, 中键平移
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.08;
+                controls.mouseButtons = {
+                    LEFT: null,
+                    MIDDLE: THREE.MOUSE.PAN,
+                    RIGHT: THREE.MOUSE.ROTATE
+                };
+                controls.touches = {
+                    ONE: THREE.TOUCH.ROTATE,
+                    TWO: THREE.TOUCH.DOLLY_PAN
+                };
+
+                // ==========================================
+                // 物理世界
+                // ==========================================
+                const world = new CANNON.World();
+                world.gravity.set(0, 0, 0);
+                world.broadphase = new CANNON.NaiveBroadphase();
+                world.solver.iterations = 15;
+
+                const physicsMaterial = new CANNON.Material("standard");
+                const contactMaterial = new CANNON.ContactMaterial(
+                    physicsMaterial, physicsMaterial,
+                    { friction: 0.05, restitution: 0.9 }
+                );
+                world.addContactMaterial(contactMaterial);
+
+                // 太阳碰撞材质（星球撞太阳也会弹开）
+                const sunMaterial = new CANNON.Material("sun");
+                const sunContactMaterial = new CANNON.ContactMaterial(
+                    physicsMaterial, sunMaterial,
+                    { friction: 0.1, restitution: 0.85 }
+                );
+                world.addContactMaterial(sunContactMaterial);
+
+                // ==========================================
+                // 光照
+                // ==========================================
+                const ambientLight = new THREE.AmbientLight(0x444444);
+                scene.add(ambientLight);
+                const sunLight = new THREE.PointLight(0xffffff, 2.5, 1000);
+                scene.add(sunLight);
+
+                // ==========================================
+                // 星空背景
+                // ==========================================
+                const starGeo = new THREE.BufferGeometry();
+                const starPos = new Float32Array(6000 * 3);
+                for (let i = 0; i < 6000 * 3; i++) starPos[i] = (Math.random() - 0.5) * 1800;
+                starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+                const starMesh = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.8 }));
+                scene.add(starMesh);
+
+                // ==========================================
+                // 全局变量
+                // ==========================================
+                const planets = [];
+                const G = 12;
+                const SUN_MASS = 1000;
+                let sunBodyRef = null;
+
+                const ephemerisData = [
+                    { name: "Mercury", color: 0xa8a8a8, radius: 0.8, dist: 25, orbitDays: 88 },
+                    { name: "Venus",   color: 0xe0cda8, radius: 1.4, dist: 35, orbitDays: 224.7 },
+                    { name: "Earth",   color: 0x4b90dd, radius: 1.5, dist: 50, orbitDays: 365.2 },
+                    { name: "Mars",    color: 0xd14009, radius: 1.1, dist: 65, orbitDays: 687 },
+                    { name: "Jupiter", color: 0xc88b3a, radius: 4.0, dist: 100, orbitDays: 4331 },
+                    { name: "Saturn",  color: 0xe3d599, radius: 3.2, dist: 135, orbitDays: 10747 },
+                    { name: "Uranus",  color: 0x66ccff, radius: 2.2, dist: 170, orbitDays: 30589 },
+                    { name: "Neptune", color: 0x3333ff, radius: 2.1, dist: 200, orbitDays: 59800 }
+                ];
+
+                // ==========================================
+                // 创建天体
+                // ==========================================
+                function createBody(name, radius, dist, angle, color, isSun) {
+                    const geo = new THREE.SphereGeometry(radius, 48, 48);
+                    const mat = new THREE.MeshStandardMaterial({
+                        color: color, roughness: 0.4, metalness: 0.15,
+                        emissive: isSun ? color : 0x000000,
+                        emissiveIntensity: isSun ? 1.2 : 0
+                    });
+                    const mesh = new THREE.Mesh(geo, mat);
+                    scene.add(mesh);
+
+                    const mass = isSun ? 0 : radius * 8;
+                    const bodyMat = isSun ? sunMaterial : physicsMaterial;
+                    const body = new CANNON.Body({ mass: mass, material: bodyMat, linearDamping: 0.05 });
+                    body.addShape(new CANNON.Sphere(radius));
+
+                    const x = dist * Math.cos(angle);
+                    const z = dist * Math.sin(angle);
+                    body.position.set(x, 0, z);
+
+                    if (!isSun) {
+                        const speed = Math.sqrt((G * SUN_MASS) / dist);
+                        const vx = -speed * Math.sin(angle);
+                        const vz = speed * Math.cos(angle);
+                        body.velocity.set(vx, 0, vz);
+                    } else {
+                        sunBodyRef = body;
+                    }
+
+                    world.addBody(body);
+                    planets.push({ name, mesh, body, isSun, baseColor: color, orbitDist: dist });
+
+                    if (!isSun) {
+                        const orbitGeo = new THREE.RingGeometry(dist - 0.15, dist + 0.15, 80);
+                        const orbitMat = new THREE.MeshBasicMaterial({
+                            color: 0xffffff, transparent: true, opacity: 0.12, side: THREE.DoubleSide
+                        });
+                        const orbitMesh = new THREE.Mesh(orbitGeo, orbitMat);
+                        orbitMesh.rotation.x = Math.PI / 2;
+                        scene.add(orbitMesh);
+                    }
+                }
+
+                function initSolarSystem() {
+                    createBody("Sun", 12, 0, 0, 0xffcc00, true);
+                    const now = Date.now();
+                    const daysSinceEpoch = now / (1000 * 60 * 60 * 24);
+                    ephemerisData.forEach(p => {
+                        const currentAngle = (daysSinceEpoch % p.orbitDays) / p.orbitDays * (Math.PI * 2);
+                        createBody(p.name, p.radius, p.dist, currentAngle, p.color, false);
+                    });
+                }
+
+                initSolarSystem();
+
+                // ==========================================
+                // 瞄准线 & 力度环可视化
+                // ==========================================
+                const aimLineGeo = new THREE.BufferGeometry();
+                aimLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+                const aimLineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.95 });
+                const aimLine = new THREE.Line(aimLineGeo, aimLineMat);
+                aimLine.visible = false;
+                aimLine.renderOrder = 999;
+                aimLine.material.depthTest = false;
+                scene.add(aimLine);
+
+                // 预测方向线（反方向，显示球将飞向哪里）
+                const predictLineGeo = new THREE.BufferGeometry();
+                predictLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+                const predictLineMat = new THREE.LineBasicMaterial({ color: 0xff6644, transparent: true, opacity: 0.55 });
+                const predictLine = new THREE.Line(predictLineGeo, predictLineMat);
+                predictLine.visible = false;
+                predictLine.renderOrder = 998;
+                predictLine.material.depthTest = false;
+                scene.add(predictLine);
+
+                // 瞄准点（光标位置对应的小球）
+                const aimDotGeo = new THREE.SphereGeometry(0.4, 16, 16);
+                const aimDotMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+                const aimDot = new THREE.Mesh(aimDotGeo, aimDotMat);
+                aimDot.visible = false;
+                aimDot.renderOrder = 1000;
+                aimDot.material.depthTest = false;
+                scene.add(aimDot);
+
+                // 力度环（围绕选中星球）
+                const powerRingGeo = new THREE.TorusGeometry(1, 0.15, 16, 48);
+                const powerRing = new THREE.Mesh(powerRingGeo, new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.8 }));
+                powerRing.visible = false;
+                powerRing.renderOrder = 997;
+                powerRing.material.depthTest = false;
+                scene.add(powerRing);
+
+                // ==========================================
+                // 交互逻辑（桌球式拉弓瞄准）
+                // ==========================================
+                const raycaster = new THREE.Raycaster();
+                raycaster.params.Mesh = { threshold: 0.5 };
+                const mouse = new THREE.Vector2();
+                const dragPlane = new THREE.Plane();
+
+                let selectedPlanet = null;
+                let dragStartPos = new THREE.Vector3();
+                let currentPullVec = new THREE.Vector3();
+                let isDragging = false;
+                let lastValidWorldPos = new THREE.Vector3();
+
+                function getPowerColor(power) {
+                    // green(0.33) -> yellow(0.16) -> red(0)
+                    const hue = (1 - Math.min(power, 1)) * 0.33;
+                    return new THREE.Color().setHSL(hue, 1, 0.5);
+                }
+
+                function updateAimVisual(cursorWorldPos) {
+                    if (!selectedPlanet) return;
+                    const planetPos = selectedPlanet.mesh.position.clone();
+
+                    currentPullVec.subVectors(cursorWorldPos, planetPos);
+                    const pullDist = currentPullVec.length();
+                    const maxPull = 35;
+                    const power = Math.min(pullDist / maxPull, 1.0);
+
+                    // 选中星球视觉放大，营造"抓住"的感觉
+                    const baseRadius = selectedPlanet.mesh.geometry.parameters.radius;
+                    selectedPlanet.mesh.scale.setScalar(1 + power * 0.25);
+
+                    // 力度环
+                    powerRing.visible = true;
+                    powerRing.position.copy(planetPos);
+                    const ringRadius = baseRadius * 1.8 + power * 6;
+                    powerRing.scale.setScalar(ringRadius);
+                    powerRing.material.color.copy(getPowerColor(power));
+                    powerRing.material.opacity = 0.6 + power * 0.4;
+                    powerRing.lookAt(camera.position);
+
+                    // 瞄准线: 星球 → 光标
+                    const positions = aimLine.geometry.attributes.position.array;
+                    positions[0] = planetPos.x; positions[1] = planetPos.y; positions[2] = planetPos.z;
+                    positions[3] = cursorWorldPos.x; positions[4] = cursorWorldPos.y; positions[5] = cursorWorldPos.z;
+                    aimLine.geometry.attributes.position.needsUpdate = true;
+                    aimLine.visible = true;
+                    aimLine.material.color.copy(getPowerColor(power));
+
+                    // 预测线: 星球 → 发射方向（拉弓反方向）
+                    if (pullDist > 0.5) {
+                        const shootDir = currentPullVec.clone().normalize().multiplyScalar(-1);
+                        const predictLen = power * 30;
+                        const predictEnd = planetPos.clone().add(shootDir.clone().multiplyScalar(predictLen));
+                        const pPositions = predictLine.geometry.attributes.position.array;
+                        pPositions[0] = planetPos.x; pPositions[1] = planetPos.y; pPositions[2] = planetPos.z;
+                        pPositions[3] = predictEnd.x; pPositions[4] = predictEnd.y; pPositions[5] = predictEnd.z;
+                        predictLine.geometry.attributes.position.needsUpdate = true;
+                        predictLine.visible = true;
+                        predictLine.material.color.copy(getPowerColor(power));
+                    } else {
+                        predictLine.visible = false;
+                    }
+
+                    // 瞄准点
+                    aimDot.position.copy(cursorWorldPos);
+                    aimDot.visible = true;
+                    aimDot.material.color.copy(getPowerColor(power));
+
+                    // 星球高亮 - 拉得越远越亮
+                    selectedPlanet.mesh.material.emissive.setHex(0x666666);
+                    selectedPlanet.mesh.material.emissiveIntensity = 0.2 + power * 0.8;
+                }
+
+                function hideAimVisual() {
+                    aimLine.visible = false;
+                    predictLine.visible = false;
+                    aimDot.visible = false;
+                    powerRing.visible = false;
+                    if (selectedPlanet) {
+                        selectedPlanet.mesh.material.emissive.setHex(0x000000);
+                        selectedPlanet.mesh.material.emissiveIntensity = 0;
+                        selectedPlanet.mesh.scale.setScalar(1);
+                    }
+                }
+
+                function getPlanetAtMouse(e) {
+                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
+                    const meshes = planets.filter(p => !p.isSun).map(p => p.mesh);
+                    const intersects = raycaster.intersectObjects(meshes);
+                    return intersects.length > 0 ? planets.find(p => p.mesh === intersects[0].object) : null;
+                }
+
+                function getWorldPosAtMouse(e, planetPos) {
+                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
+
+                    // 使用 XZ 水平面(Y轴朝上)，使拖拽方向与鼠标移动直觉一致
+                    const up = new THREE.Vector3(0, 1, 0);
+                    const camDir = camera.getWorldDirection(new THREE.Vector3());
+                    const dp = Math.abs(camDir.dot(up)); // 相机方向与垂直方向的点积
+
+                    if (dp > 0.98) {
+                        // 接近顶视角，水平面近乎平行于射线，改用相机朝向平面
+                        dragPlane.setFromNormalAndCoplanarPoint(camDir, planetPos);
+                    } else if (dp < 0.05) {
+                        // 接近平视，水平面近乎与射线方向平行，改用相机朝向平面
+                        dragPlane.setFromNormalAndCoplanarPoint(camDir, planetPos);
+                    } else {
+                        // 正常情况：使用水平面，穿过星球位置
+                        dragPlane.setFromNormalAndCoplanarPoint(up, planetPos);
+                    }
+
+                    const pt = new THREE.Vector3();
+                    const hit = raycaster.ray.intersectPlane(dragPlane, pt);
+                    if (!hit) return null;
+
+                    // 限制拖拽距离，防止极端值
+                    const maxDrag = 50;
+                    if (pt.distanceTo(planetPos) > maxDrag) {
+                        const dir = pt.clone().sub(planetPos).normalize();
+                        pt.copy(planetPos).add(dir.multiplyScalar(maxDrag));
+                    }
+                    return pt;
+                }
+
+                // 鼠标悬停光标
+                renderer.domElement.addEventListener('mousemove', (e) => {
+                    if (isDragging) return;
+                    const planet = getPlanetAtMouse(e);
+                    renderer.domElement.style.cursor = planet ? 'grab' : 'default';
+                });
+
+                renderer.domElement.addEventListener('mousedown', (e) => {
+                    if (e.button !== 0) return; // 只响应左键
+
+                    const planet = getPlanetAtMouse(e);
+                    if (!planet) return; // 没点到星球，不做处理
+
+                    e.stopPropagation();
+                    e.preventDefault();
+
+                    selectedPlanet = planet;
+                    isDragging = true;
+                    controls.enabled = false;
+                    renderer.domElement.style.cursor = 'grabbing';
+
+                    // 冻结星球
+                    if (selectedPlanet.body.mass > 0) {
+                        selectedPlanet.body.type = CANNON.Body.KINEMATIC;
+                        selectedPlanet.body.velocity.set(0, 0, 0);
+                        selectedPlanet.body.angularVelocity.set(0, 0, 0);
+                    }
+
+                    dragStartPos.copy(selectedPlanet.mesh.position);
+                    lastValidWorldPos.set(0, 0, 0);
+
+                    const worldPos = getWorldPosAtMouse(e, dragStartPos);
+                    if (worldPos) {
+                        lastValidWorldPos.copy(worldPos);
+                        updateAimVisual(worldPos);
+                    }
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (!isDragging || !selectedPlanet) return;
+
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const worldPos = getWorldPosAtMouse(e, selectedPlanet.mesh.position);
+                    if (worldPos) {
+                        lastValidWorldPos.copy(worldPos);
+                        updateAimVisual(worldPos);
+                    } else if (lastValidWorldPos.length() > 0) {
+                        // 射线未命中时，沿用上一帧的有效位置
+                        updateAimVisual(lastValidWorldPos);
+                    }
+                });
+
+                window.addEventListener('mouseup', (e) => {
+                    if (!isDragging || !selectedPlanet) return;
+
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const planetPos = selectedPlanet.mesh.position.clone();
+                    let worldPos = getWorldPosAtMouse(e, planetPos);
+                    if (!worldPos && lastValidWorldPos.length() > 0) {
+                        worldPos = lastValidWorldPos.clone();
+                    }
+
+                    if (worldPos && selectedPlanet.body.mass > 0) {
+                        // 发射方向 = 星球 → 光标 的反方向（拉弓射箭）
+                        const shootDir = new THREE.Vector3().subVectors(planetPos, worldPos).normalize();
+                        const pullDist = new THREE.Vector3().subVectors(worldPos, planetPos).length();
+                        const maxPull = 35;
+                        const power = Math.min(pullDist / maxPull, 1.0);
+                        const maxSpeed = 250;
+                        const speed = power * maxSpeed;
+
+                        selectedPlanet.body.type = CANNON.Body.DYNAMIC;
+                        selectedPlanet.body.velocity.set(
+                            shootDir.x * speed,
+                            shootDir.y * speed,
+                            shootDir.z * speed
+                        );
+                        selectedPlanet.body.angularVelocity.set(
+                            (Math.random() - 0.5) * 5,
+                            (Math.random() - 0.5) * 5,
+                            (Math.random() - 0.5) * 5
+                        );
+                    }
+
+                    hideAimVisual();
+                    selectedPlanet = null;
+                    isDragging = false;
+                    controls.enabled = true;
+                    renderer.domElement.style.cursor = 'default';
+                });
+
+                // ==========================================
+                // 动画循环
+                // ==========================================
+                const clock = new THREE.Clock();
+                function animate() {
+                    requestAnimationFrame(animate);
+                    const dt = Math.min(clock.getDelta(), 0.1);
+
+                    // 太阳引力
+                    planets.forEach(p => {
+                        if (p === selectedPlanet || p.isSun) return;
+                        const force = new CANNON.Vec3();
+                        sunBodyRef.position.vsub(p.body.position, force);
+                        const distanceSq = force.lengthSquared();
+                        if (distanceSq > 0.5) {
+                            force.normalize();
+                            const strength = (G * p.body.mass * SUN_MASS) / distanceSq;
+                            force.scale(strength, force);
+                            p.body.applyForce(force, p.body.position);
+                        }
+                    });
+
+                    world.step(1 / 60, dt, 3);
+
+                    // 同步 Three.js 和 Cannon.js
+                    planets.forEach(p => {
+                        p.mesh.position.copy(p.body.position);
+                        p.mesh.quaternion.copy(p.body.quaternion);
+                    });
+
+                    // 星空缓慢旋转
+                    starMesh.rotation.y += 0.00005;
+
+                    controls.update();
+                    renderer.render(scene, camera);
+                }
+
+                window.addEventListener('resize', () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+
+                animate();
+
+            } catch (err) {
+                const errorUI = document.createElement('div');
+                errorUI.style.cssText = `
+                    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                    background: rgba(20, 0, 0, 0.95); border: 2px solid #ff4444; border-radius: 12px;
+                    padding: 30px; color: #fff; text-align: center; font-family: sans-serif;
+                    box-shadow: 0 10px 30px rgba(255, 0, 0, 0.4); z-index: 100; min-width: 300px;
+                `;
+                errorUI.innerHTML = `
+                    <h2 style="color:#ff4444; margin-top:0;">渲染失败</h2>
+                    <p style="font-size: 15px;">网络无法加载 3D 引擎文件或浏览器安全设置拦截了脚本。</p>
+                    <div style="background:#000; padding:12px; color:#00ff00; font-family:monospace; text-align:left; overflow:auto; border-radius:6px; margin: 15px 0;">
+                        <b>错误信息:</b><br>${err.message}
+                    </div>
+                    <p style="color:#aaa; font-size: 13px; margin-bottom:0; line-height:1.6;">
+                        1. 暂时关闭广告拦截插件<br>
+                        2. 检查网络或切换代理/VPN<br>
+                        3. 按 F12 查看控制台
+                    </p>
+                `;
+                document.body.appendChild(errorUI);
+                const statusEl = document.getElementById('sys-status');
+                if (statusEl) {
+                    statusEl.innerHTML = "引擎加载失败";
+                    statusEl.style.color = "red";
+                }
+            }
+        };
+    </script>
+</body>
+</html>
