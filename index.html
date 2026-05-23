@@ -256,9 +256,8 @@
                     return new THREE.Color().setHSL(hue, 1, 0.5);
                 }
 
-                function updateAimVisual(cursorWorldPos) {
+                function updateAimVisual(cursorWorldPos, planetPos) {
                     if (!selectedPlanet) return;
-                    const planetPos = selectedPlanet.mesh.position.clone();
 
                     currentPullVec.subVectors(cursorWorldPos, planetPos);
                     const pullDist = currentPullVec.length();
@@ -395,12 +394,13 @@
                     }
 
                     dragStartPos.copy(selectedPlanet.mesh.position);
+                    selectedPlanet.originalPosition = selectedPlanet.mesh.position.clone();
                     lastValidWorldPos.set(0, 0, 0);
 
                     const worldPos = getWorldPosAtMouse(e, dragStartPos);
                     if (worldPos) {
                         lastValidWorldPos.copy(worldPos);
-                        updateAimVisual(worldPos);
+                        updateAimVisual(worldPos, selectedPlanet.originalPosition);
                     }
                 });
 
@@ -410,13 +410,26 @@
                     e.preventDefault();
                     e.stopPropagation();
 
-                    const worldPos = getWorldPosAtMouse(e, selectedPlanet.mesh.position);
+                    const worldPos = getWorldPosAtMouse(e, selectedPlanet.originalPosition);
                     if (worldPos) {
                         lastValidWorldPos.copy(worldPos);
-                        updateAimVisual(worldPos);
+
+                        // 计算拉拽偏移向量，限制最大拉距为 20 个单位
+                        const offset = new THREE.Vector3().subVectors(worldPos, selectedPlanet.originalPosition);
+                        const maxVisualPull = 20;
+                        if (offset.length() > maxVisualPull) {
+                            offset.normalize().multiplyScalar(maxVisualPull);
+                        }
+
+                        // 将星球网格和刚体位置偏移到 原始位置 + 拉拽向量
+                        const displacedPos = selectedPlanet.originalPosition.clone().add(offset);
+                        selectedPlanet.mesh.position.copy(displacedPos);
+                        selectedPlanet.body.position.copy(displacedPos);
+
+                        updateAimVisual(worldPos, selectedPlanet.originalPosition);
                     } else if (lastValidWorldPos.length() > 0) {
                         // 射线未命中时，沿用上一帧的有效位置
-                        updateAimVisual(lastValidWorldPos);
+                        updateAimVisual(lastValidWorldPos, selectedPlanet.originalPosition);
                     }
                 });
 
@@ -426,20 +439,24 @@
                     e.preventDefault();
                     e.stopPropagation();
 
-                    const planetPos = selectedPlanet.mesh.position.clone();
-                    let worldPos = getWorldPosAtMouse(e, planetPos);
+                    const origPos = selectedPlanet.originalPosition.clone();
+                    let worldPos = getWorldPosAtMouse(e, origPos);
                     if (!worldPos && lastValidWorldPos.length() > 0) {
                         worldPos = lastValidWorldPos.clone();
                     }
 
                     if (worldPos && selectedPlanet.body.mass > 0) {
-                        // 发射方向 = 星球 → 光标 的反方向（拉弓射箭）
-                        const shootDir = new THREE.Vector3().subVectors(planetPos, worldPos).normalize();
-                        const pullDist = new THREE.Vector3().subVectors(worldPos, planetPos).length();
+                        // 发射方向 = 原始位置 → 光标 的反方向（拉弓射箭）
+                        const shootDir = new THREE.Vector3().subVectors(origPos, worldPos).normalize();
+                        const pullDist = new THREE.Vector3().subVectors(worldPos, origPos).length();
                         const maxPull = 35;
                         const power = Math.min(pullDist / maxPull, 1.0);
                         const maxSpeed = 250;
                         const speed = power * maxSpeed;
+
+                        // 立即将星球位置重置回原始轨道位置，避免位置偏移累积
+                        selectedPlanet.mesh.position.copy(origPos);
+                        selectedPlanet.body.position.copy(origPos);
 
                         selectedPlanet.body.type = CANNON.Body.DYNAMIC;
                         selectedPlanet.body.velocity.set(
