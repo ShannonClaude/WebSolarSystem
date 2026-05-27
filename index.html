@@ -5,7 +5,7 @@
     <title>太阳系桌球 - 星球撞击沙盒</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; user-select: none; }
-        canvas { display: block; }
+        canvas { display: block; touch-action: none; }
         #ui-layer {
             position: absolute;
             top: 20px;
@@ -35,6 +35,9 @@
         <p>💥 <span class="highlight">松开左键</span>：发射星球撞击其他天体</p>
         <p>📷 <span class="highlight">右键拖动空白处</span>：旋转视角</p>
         <p>🔍 <span class="highlight">鼠标滚轮</span>：缩放距离</p>
+        <p>🕳️ <span class="highlight">黑洞 → 白洞</span>：星球进入黑洞会从太阳对侧白洞弹出</p>
+        <p>⚪ <span class="highlight">白洞斥力</span>：直射白洞会在远处被弹飞，无法靠近</p>
+        <p>☀️ <span class="highlight">太阳焚烧</span>：星球触及太阳会被焚毁</p>
         <p class="status" id="sys-status">⏳ 正在初始化 3D 引擎...</p>
         <p style="color: #ffcc00; font-weight: bold; font-size: 12px;">(拉得越远力度越大，星球间碰撞如桌球)</p>
     </div>
@@ -95,11 +98,11 @@
                 );
                 world.addContactMaterial(contactMaterial);
 
-                // 太阳碰撞材质（星球撞太阳也会弹开）
+                // 太阳碰撞材质（被焚毁前可能有轻微接触）
                 const sunMaterial = new CANNON.Material("sun");
                 const sunContactMaterial = new CANNON.ContactMaterial(
                     physicsMaterial, sunMaterial,
-                    { friction: 0.1, restitution: 0.85 }
+                    { friction: 0.1, restitution: 0.2 }
                 );
                 world.addContactMaterial(sunContactMaterial);
 
@@ -127,7 +130,9 @@
                 const planets = [];
                 const G = 12;
                 const SUN_MASS = 1000;
+                const SUN_RADIUS = 12;
                 let sunBodyRef = null;
+                let sunMeshRef = null;
 
                 const ephemerisData = [
                     { name: "Mercury", color: 0xa8a8a8, radius: 0.8, dist: 25, orbitDays: 88 },
@@ -153,26 +158,54 @@
                     const mesh = new THREE.Mesh(geo, mat);
                     scene.add(mesh);
 
+                    if (isSun) {
+                        const corona = new THREE.Mesh(
+                            new THREE.SphereGeometry(radius * 1.45, 32, 32),
+                            new THREE.MeshBasicMaterial({
+                                color: 0xff6600, transparent: true, opacity: 0.28, side: THREE.BackSide
+                            })
+                        );
+                        mesh.add(corona);
+
+                        const flare = new THREE.Mesh(
+                            new THREE.SphereGeometry(radius * 1.15, 24, 24),
+                            new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.5 })
+                        );
+                        mesh.add(flare);
+                    }
+
                     const mass = isSun ? 0 : radius * 8;
                     const bodyMat = isSun ? sunMaterial : physicsMaterial;
-                    const body = new CANNON.Body({ mass: mass, material: bodyMat, linearDamping: 0.05 });
+                    const body = new CANNON.Body({
+                        mass: mass,
+                        material: bodyMat,
+                        linearDamping: isSun ? 0 : 0,
+                        angularDamping: isSun ? 0 : 0.05
+                    });
                     body.addShape(new CANNON.Sphere(radius));
 
                     const x = dist * Math.cos(angle);
                     const z = dist * Math.sin(angle);
                     body.position.set(x, 0, z);
 
+                    const planetEntry = { name, mesh, body, isSun, baseColor: color, orbitDist: dist };
+
                     if (!isSun) {
                         const speed = Math.sqrt((G * SUN_MASS) / dist);
                         const vx = -speed * Math.sin(angle);
                         const vz = speed * Math.cos(angle);
                         body.velocity.set(vx, 0, vz);
+                        planetEntry.orbitAngle = angle;
+                        planetEntry.orbitSpeed = speed / dist;
+                        planetEntry.orbitMode = true;
+                        body.type = CANNON.Body.KINEMATIC;
                     } else {
                         sunBodyRef = body;
+                        sunMeshRef = mesh;
                     }
 
                     world.addBody(body);
-                    planets.push({ name, mesh, body, isSun, baseColor: color, orbitDist: dist });
+                    planets.push(planetEntry);
 
                     if (!isSun) {
                         const orbitGeo = new THREE.RingGeometry(dist - 0.15, dist + 0.15, 80);
@@ -186,7 +219,7 @@
                 }
 
                 function initSolarSystem() {
-                    createBody("Sun", 12, 0, 0, 0xffcc00, true);
+                    createBody("Sun", SUN_RADIUS, 0, 0, 0xffcc00, true);
                     const now = Date.now();
                     const daysSinceEpoch = now / (1000 * 60 * 60 * 24);
                     ephemerisData.forEach(p => {
@@ -196,6 +229,338 @@
                 }
 
                 initSolarSystem();
+
+                // ==========================================
+                // 黑洞 & 白洞（火星与土星轨道带，太阳对侧对称）
+                // ==========================================
+                const MARS_ORBIT = 65;
+                const SATURN_ORBIT = 135;
+                const WORMHOLE_DIST = (MARS_ORBIT + SATURN_ORBIT) * 0.5;
+                const WORMHOLE_ANGLE = Math.PI / 5;
+                const WORMHOLE_CORE_RADIUS = 4.5;
+                const WORMHOLE_CAPTURE_RADIUS = 7;
+                const WHITE_HOLE_REPULSE_RADIUS = 42;
+                const WHITE_HOLE_REPULSE_STRENGTH = 120000;
+
+                const wormholePair = {
+                    black: { position: new THREE.Vector3() },
+                    white: { position: new THREE.Vector3() }
+                };
+
+                wormholePair.black.position.set(
+                    WORMHOLE_DIST * Math.cos(WORMHOLE_ANGLE),
+                    0,
+                    WORMHOLE_DIST * Math.sin(WORMHOLE_ANGLE)
+                );
+                wormholePair.white.position.set(
+                    -wormholePair.black.position.x,
+                    0,
+                    -wormholePair.black.position.z
+                );
+
+                function createWormholeVisuals() {
+                    const bhGroup = new THREE.Group();
+                    bhGroup.position.copy(wormholePair.black.position);
+
+                    const bhCore = new THREE.Mesh(
+                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.55, 32, 32),
+                        new THREE.MeshBasicMaterial({ color: 0x000000 })
+                    );
+                    bhGroup.add(bhCore);
+
+                    const bhDisk = new THREE.Mesh(
+                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 1.6, 0.35, 16, 64),
+                        new THREE.MeshBasicMaterial({ color: 0x9933ff, transparent: true, opacity: 0.85 })
+                    );
+                    bhDisk.rotation.x = Math.PI / 2.3;
+                    bhGroup.add(bhDisk);
+
+                    const bhOuterDisk = new THREE.Mesh(
+                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 2.2, 0.2, 12, 64),
+                        new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.45 })
+                    );
+                    bhOuterDisk.rotation.x = Math.PI / 2.3;
+                    bhGroup.add(bhOuterDisk);
+
+                    const bhGlow = new THREE.Mesh(
+                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 1.8, 24, 24),
+                        new THREE.MeshBasicMaterial({ color: 0x220044, transparent: true, opacity: 0.25, side: THREE.BackSide })
+                    );
+                    bhGroup.add(bhGlow);
+
+                    scene.add(bhGroup);
+                    wormholePair.black.group = bhGroup;
+                    wormholePair.black.disk = bhDisk;
+                    wormholePair.black.outerDisk = bhOuterDisk;
+
+                    const whGroup = new THREE.Group();
+                    whGroup.position.copy(wormholePair.white.position);
+
+                    const whCore = new THREE.Mesh(
+                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.7, 32, 32),
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 })
+                    );
+                    whGroup.add(whCore);
+
+                    const whGlow = new THREE.Mesh(
+                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 2.5, 24, 24),
+                        new THREE.MeshBasicMaterial({ color: 0xaaccff, transparent: true, opacity: 0.18, side: THREE.BackSide })
+                    );
+                    whGroup.add(whGlow);
+
+                    const whRing = new THREE.Mesh(
+                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 1.4, 0.25, 16, 48),
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
+                    );
+                    whRing.rotation.x = Math.PI / 2;
+                    whGroup.add(whRing);
+
+                    const whLight = new THREE.PointLight(0xffffff, 2.2, 120);
+                    whGroup.add(whLight);
+
+                    const whRepulseField = new THREE.Mesh(
+                        new THREE.SphereGeometry(WHITE_HOLE_REPULSE_RADIUS, 32, 32),
+                        new THREE.MeshBasicMaterial({
+                            color: 0xffffff, transparent: true, opacity: 0.04, wireframe: true
+                        })
+                    );
+                    whGroup.add(whRepulseField);
+                    wormholePair.white.repulseField = whRepulseField;
+
+                    scene.add(whGroup);
+                    wormholePair.white.group = whGroup;
+                    wormholePair.white.core = whCore;
+                    wormholePair.white.glow = whGlow;
+                    wormholePair.white.ring = whRing;
+                    wormholePair.white.light = whLight;
+
+                    // 标记虫洞所在轨道带（火星—土星之间）
+                    const wormholeBandGeo = new THREE.RingGeometry(MARS_ORBIT - 0.2, SATURN_ORBIT + 0.2, 96);
+                    const wormholeBandMat = new THREE.MeshBasicMaterial({
+                        color: 0x8844ff, transparent: true, opacity: 0.06, side: THREE.DoubleSide
+                    });
+                    const wormholeBand = new THREE.Mesh(wormholeBandGeo, wormholeBandMat);
+                    wormholeBand.rotation.x = Math.PI / 2;
+                    scene.add(wormholeBand);
+                }
+
+                createWormholeVisuals();
+
+                const teleportCooldowns = new Map();
+                const TELEPORT_COOLDOWN = 1.2;
+                const _bhPos = new THREE.Vector3();
+                const _whPos = new THREE.Vector3();
+                const _ejectDir = new THREE.Vector3();
+                const _repulseDir = new THREE.Vector3();
+                const _sunForce = new CANNON.Vec3();
+                const _repulseForce = new CANNON.Vec3();
+                const burningPlanets = [];
+
+                function applyWhiteHoleRepulsion(p) {
+                    if (p.isSun) return;
+
+                    _whPos.copy(wormholePair.white.position);
+                    _repulseDir.set(
+                        p.body.position.x - _whPos.x,
+                        p.body.position.y - _whPos.y,
+                        p.body.position.z - _whPos.z
+                    );
+                    const dist = _repulseDir.length();
+                    if (dist >= WHITE_HOLE_REPULSE_RADIUS || dist < 0.5) return;
+
+                    const falloff = 1 - dist / WHITE_HOLE_REPULSE_RADIUS;
+                    const strength = WHITE_HOLE_REPULSE_STRENGTH * falloff * falloff;
+                    _repulseDir.multiplyScalar(strength / dist);
+
+                    if (p.orbitMode) {
+                        p.orbitMode = false;
+                        p.body.type = CANNON.Body.DYNAMIC;
+                    }
+
+                    p.body.applyForce(
+                        _repulseForce.set(_repulseDir.x, _repulseDir.y, _repulseDir.z),
+                        p.body.position
+                    );
+                }
+
+                function updateOrbitalPlanets(dt) {
+                    planets.forEach(p => {
+                        if (p.isSun || !p.orbitMode || p === selectedPlanet || p.burning) return;
+
+                        p.orbitAngle += p.orbitSpeed * dt;
+                        const d = p.orbitDist;
+                        const x = d * Math.cos(p.orbitAngle);
+                        const z = d * Math.sin(p.orbitAngle);
+                        const speed = Math.sqrt((G * SUN_MASS) / d);
+
+                        p.body.position.set(x, 0, z);
+                        p.body.velocity.set(-speed * Math.sin(p.orbitAngle), 0, speed * Math.cos(p.orbitAngle));
+                        p.body.angularVelocity.set(0, 0, 0);
+                    });
+                }
+
+                function applySunGravity(dt) {
+                    planets.forEach(p => {
+                        if (p.isSun || p.orbitMode || p === selectedPlanet || p.burning) return;
+
+                        _sunForce.set(0, 0, 0);
+                        sunBodyRef.position.vsub(p.body.position, _sunForce);
+                        const distanceSq = _sunForce.lengthSquared();
+                        if (distanceSq > 0.5) {
+                            _sunForce.normalize();
+                            const strength = (G * p.body.mass * SUN_MASS) / distanceSq;
+                            _sunForce.scale(strength, _sunForce);
+                            p.body.applyForce(_sunForce, p.body.position);
+                        }
+                    });
+                }
+
+                function destroyPlanet(planet) {
+                    if (planet.burning) return;
+                    planet.burning = true;
+
+                    if (planet === selectedPlanet) {
+                        hideAimVisual();
+                        selectedPlanet = null;
+                        isDragging = false;
+                        hasValidDragPos = false;
+                        activePointerId = null;
+                        controls.enabled = true;
+                        renderer.domElement.style.cursor = 'default';
+                    }
+
+                    teleportCooldowns.delete(planet);
+                    world.removeBody(planet.body);
+
+                    burningPlanets.push({
+                        planet,
+                        life: 0.6,
+                        maxLife: 0.6
+                    });
+                }
+
+                function updateBurningPlanets(dt) {
+                    for (let i = burningPlanets.length - 1; i >= 0; i--) {
+                        const burn = burningPlanets[i];
+                        burn.life -= dt;
+                        const t = 1 - burn.life / burn.maxLife;
+                        const scale = 1 + t * 2.5;
+                        burn.planet.mesh.scale.setScalar(scale);
+                        burn.planet.mesh.material.emissive.setHex(0xff4400);
+                        burn.planet.mesh.material.emissiveIntensity = 1.5 * (1 - t);
+                        burn.planet.mesh.material.opacity = Math.max(0, 1 - t * 1.2);
+                        burn.planet.mesh.material.transparent = true;
+
+                        if (burn.life <= 0) {
+                            scene.remove(burn.planet.mesh);
+                            const idx = planets.indexOf(burn.planet);
+                            if (idx !== -1) planets.splice(idx, 1);
+                            burningPlanets.splice(i, 1);
+                        }
+                    }
+                }
+
+                function checkSunIncineration() {
+                    planets.forEach(p => {
+                        if (p.isSun || p === selectedPlanet || p.burning) return;
+
+                        const pr = p.mesh.geometry.parameters.radius;
+                        const dx = p.body.position.x;
+                        const dy = p.body.position.y;
+                        const dz = p.body.position.z;
+                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                        if (dist < SUN_RADIUS + pr * 0.65) {
+                            destroyPlanet(p);
+                        }
+                    });
+                }
+
+                function updateSunVisual(elapsed) {
+                    if (!sunMeshRef) return;
+                    const pulse = 1 + Math.sin(elapsed * 2.2) * 0.04;
+                    sunMeshRef.scale.setScalar(pulse);
+                    sunLight.intensity = 2.5 + Math.sin(elapsed * 3) * 0.5;
+                }
+
+                function updateWormholeVisuals(elapsed) {
+                    if (wormholePair.black.disk) {
+                        wormholePair.black.disk.rotation.z += 0.025;
+                        wormholePair.black.outerDisk.rotation.z -= 0.015;
+                    }
+                    if (wormholePair.white.core) {
+                        const pulse = 0.85 + Math.sin(elapsed * 4) * 0.15;
+                        wormholePair.white.core.scale.setScalar(pulse);
+                        wormholePair.white.glow.scale.setScalar(1 + Math.sin(elapsed * 3) * 0.08);
+                        wormholePair.white.ring.rotation.z += 0.012;
+                        wormholePair.white.light.intensity = 1.8 + Math.sin(elapsed * 5) * 0.6;
+                        if (wormholePair.white.repulseField) {
+                            wormholePair.white.repulseField.rotation.y += 0.004;
+                            wormholePair.white.repulseField.material.opacity = 0.03 + Math.sin(elapsed * 2) * 0.015;
+                        }
+                    }
+                }
+
+                function teleportThroughWormhole(planet) {
+                    _whPos.copy(wormholePair.white.position);
+                    const speed = Math.max(planet.body.velocity.length(), 30);
+
+                    _ejectDir.copy(_whPos).normalize();
+                    if (_ejectDir.lengthSq() < 0.001) {
+                        _ejectDir.set(0, 0, 1);
+                    }
+
+                    planet.orbitMode = false;
+                    planet.body.type = CANNON.Body.DYNAMIC;
+
+                    planet.body.position.set(_whPos.x, _whPos.y, _whPos.z);
+                    planet.body.velocity.set(
+                        _ejectDir.x * speed,
+                        _ejectDir.y * speed,
+                        _ejectDir.z * speed
+                    );
+                    planet.body.angularVelocity.set(
+                        (Math.random() - 0.5) * 4,
+                        (Math.random() - 0.5) * 4,
+                        (Math.random() - 0.5) * 4
+                    );
+                    planet.mesh.position.copy(planet.body.position);
+
+                    planet.mesh.material.emissive.setHex(0xffffff);
+                    planet.mesh.material.emissiveIntensity = 1.5;
+                    setTimeout(() => {
+                        if (planet.mesh && planet.mesh.material) {
+                            planet.mesh.material.emissive.setHex(0x000000);
+                            planet.mesh.material.emissiveIntensity = 0;
+                        }
+                    }, 300);
+
+                    teleportCooldowns.set(planet, TELEPORT_COOLDOWN);
+                }
+
+                function checkWormholeTeleports(dt) {
+                    _bhPos.copy(wormholePair.black.position);
+
+                    teleportCooldowns.forEach((time, planet) => {
+                        const next = time - dt;
+                        if (next <= 0) teleportCooldowns.delete(planet);
+                        else teleportCooldowns.set(planet, next);
+                    });
+
+                    planets.forEach(p => {
+                        if (p.isSun || p === selectedPlanet || p.burning || teleportCooldowns.has(p)) return;
+
+                        const pr = p.mesh.geometry.parameters.radius;
+                        const dx = p.body.position.x - _bhPos.x;
+                        const dy = p.body.position.y - _bhPos.y;
+                        const dz = p.body.position.z - _bhPos.z;
+                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                        if (dist < WORMHOLE_CAPTURE_RADIUS + pr * 0.5) {
+                            teleportThroughWormhole(p);
+                        }
+                    });
+                }
 
                 // ==========================================
                 // 瞄准线 & 力度环可视化
@@ -240,15 +605,19 @@
                 // 交互逻辑（桌球式拉弓瞄准）
                 // ==========================================
                 const raycaster = new THREE.Raycaster();
-                raycaster.params.Mesh = { threshold: 0.5 };
                 const mouse = new THREE.Vector2();
                 const dragPlane = new THREE.Plane();
+                const _rayOrigin = new THREE.Vector3();
+                const _rayDir = new THREE.Vector3();
+                const _oc = new THREE.Vector3();
 
                 let selectedPlanet = null;
                 let dragStartPos = new THREE.Vector3();
                 let currentPullVec = new THREE.Vector3();
                 let isDragging = false;
                 let lastValidWorldPos = new THREE.Vector3();
+                let hasValidDragPos = false;
+                let activePointerId = null;
 
                 function getPowerColor(power) {
                     // green(0.33) -> yellow(0.16) -> red(0)
@@ -322,18 +691,48 @@
                     }
                 }
 
+                function updateMouseFromEvent(e) {
+                    const rect = renderer.domElement.getBoundingClientRect();
+                    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                }
+
+                // 放大拾取半径：远处的小星球用 mesh 射线几乎点不中
                 function getPlanetAtMouse(e) {
-                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    updateMouseFromEvent(e);
                     raycaster.setFromCamera(mouse, camera);
-                    const meshes = planets.filter(p => !p.isSun).map(p => p.mesh);
-                    const intersects = raycaster.intersectObjects(meshes);
-                    return intersects.length > 0 ? planets.find(p => p.mesh === intersects[0].object) : null;
+                    _rayOrigin.copy(raycaster.ray.origin);
+                    _rayDir.copy(raycaster.ray.direction).normalize();
+
+                    let closest = null;
+                    let closestT = Infinity;
+
+                    planets.forEach(p => {
+                        if (p.isSun || p.burning) return;
+                        const center = p.body.position;
+                        const visualRadius = p.mesh.geometry.parameters.radius;
+                        const pickRadius = Math.max(visualRadius * 5, 4);
+
+                        _oc.subVectors(_rayOrigin, center);
+                        const b = 2 * _oc.dot(_rayDir);
+                        const c = _oc.dot(_oc) - pickRadius * pickRadius;
+                        const disc = b * b - 4 * c;
+                        if (disc < 0) return;
+
+                        const sqrtDisc = Math.sqrt(disc);
+                        let t = (-b - sqrtDisc) * 0.5;
+                        if (t < 0) t = (-b + sqrtDisc) * 0.5;
+                        if (t < 0 || t >= closestT) return;
+
+                        closestT = t;
+                        closest = p;
+                    });
+
+                    return closest;
                 }
 
                 function getWorldPosAtMouse(e, planetPos) {
-                    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-                    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                    updateMouseFromEvent(e);
                     raycaster.setFromCamera(mouse, camera);
 
                     // 使用 XZ 水平面(Y轴朝上)，使拖拽方向与鼠标移动直觉一致
@@ -365,145 +764,191 @@
                     return pt;
                 }
 
-                // 鼠标悬停光标
-                renderer.domElement.addEventListener('mousemove', (e) => {
-                    if (isDragging) return;
-                    const planet = getPlanetAtMouse(e);
-                    renderer.domElement.style.cursor = planet ? 'grab' : 'default';
-                });
-
-                renderer.domElement.addEventListener('mousedown', (e) => {
-                    if (e.button !== 0) return; // 只响应左键
-
-                    const planet = getPlanetAtMouse(e);
-                    if (!planet) return; // 没点到星球，不做处理
-
-                    e.stopPropagation();
-                    e.preventDefault();
-
+                function beginPlanetDrag(e, planet) {
                     selectedPlanet = planet;
                     isDragging = true;
+                    hasValidDragPos = false;
+                    activePointerId = e.pointerId;
                     controls.enabled = false;
                     renderer.domElement.style.cursor = 'grabbing';
 
-                    // 冻结星球
                     if (selectedPlanet.body.mass > 0) {
                         selectedPlanet.body.type = CANNON.Body.KINEMATIC;
                         selectedPlanet.body.velocity.set(0, 0, 0);
                         selectedPlanet.body.angularVelocity.set(0, 0, 0);
                     }
 
-                    dragStartPos.copy(selectedPlanet.mesh.position);
-                    selectedPlanet.originalPosition = selectedPlanet.mesh.position.clone();
-                    lastValidWorldPos.set(0, 0, 0);
+                    dragStartPos.copy(selectedPlanet.body.position);
+                    selectedPlanet.originalPosition = dragStartPos.clone();
 
                     const worldPos = getWorldPosAtMouse(e, dragStartPos);
                     if (worldPos) {
+                        hasValidDragPos = true;
                         lastValidWorldPos.copy(worldPos);
                         updateAimVisual(worldPos, selectedPlanet.originalPosition);
                     }
-                });
 
-                window.addEventListener('mousemove', (e) => {
+                    try {
+                        renderer.domElement.setPointerCapture(e.pointerId);
+                    } catch (_) { /* 旧浏览器忽略 */ }
+                }
+
+                function updatePlanetDrag(e) {
                     if (!isDragging || !selectedPlanet) return;
-
-                    e.preventDefault();
-                    e.stopPropagation();
 
                     const worldPos = getWorldPosAtMouse(e, selectedPlanet.originalPosition);
                     if (worldPos) {
+                        hasValidDragPos = true;
                         lastValidWorldPos.copy(worldPos);
 
-                        // 计算拉拽偏移向量，限制最大拉距为 20 个单位
                         const offset = new THREE.Vector3().subVectors(worldPos, selectedPlanet.originalPosition);
-                        const maxVisualPull = 20;
+                        const maxVisualPull = 35;
                         if (offset.length() > maxVisualPull) {
                             offset.normalize().multiplyScalar(maxVisualPull);
                         }
 
-                        // 将星球网格和刚体位置偏移到 原始位置 + 拉拽向量
                         const displacedPos = selectedPlanet.originalPosition.clone().add(offset);
                         selectedPlanet.mesh.position.copy(displacedPos);
                         selectedPlanet.body.position.copy(displacedPos);
 
                         updateAimVisual(worldPos, selectedPlanet.originalPosition);
-                    } else if (lastValidWorldPos.length() > 0) {
-                        // 射线未命中时，沿用上一帧的有效位置
+                    } else if (hasValidDragPos) {
                         updateAimVisual(lastValidWorldPos, selectedPlanet.originalPosition);
                     }
-                });
+                }
 
-                window.addEventListener('mouseup', (e) => {
+                function endPlanetDrag(e) {
                     if (!isDragging || !selectedPlanet) return;
-
-                    e.preventDefault();
-                    e.stopPropagation();
 
                     const origPos = selectedPlanet.originalPosition.clone();
                     let worldPos = getWorldPosAtMouse(e, origPos);
-                    if (!worldPos && lastValidWorldPos.length() > 0) {
+                    if (!worldPos && hasValidDragPos) {
                         worldPos = lastValidWorldPos.clone();
                     }
 
                     if (worldPos && selectedPlanet.body.mass > 0) {
-                        // 发射方向 = 原始位置 → 光标 的反方向（拉弓射箭）
-                        const shootDir = new THREE.Vector3().subVectors(origPos, worldPos).normalize();
-                        const pullDist = new THREE.Vector3().subVectors(worldPos, origPos).length();
-                        const maxPull = 35;
-                        const power = Math.min(pullDist / maxPull, 1.0);
-                        const maxSpeed = 250;
-                        const speed = power * maxSpeed;
+                        const pullVec = new THREE.Vector3().subVectors(worldPos, origPos);
+                        const pullDist = pullVec.length();
+                        const minPull = 0.8;
 
-                        // 立即将星球位置重置回原始轨道位置，避免位置偏移累积
-                        selectedPlanet.mesh.position.copy(origPos);
-                        selectedPlanet.body.position.copy(origPos);
+                        if (pullDist >= minPull) {
+                            const shootDir = pullVec.clone().normalize().multiplyScalar(-1);
+                            const maxPull = 35;
+                            const power = Math.min(pullDist / maxPull, 1.0);
+                            const maxSpeed = 250;
+                            const speed = Math.max(power * maxSpeed, 15);
 
-                        selectedPlanet.body.type = CANNON.Body.DYNAMIC;
-                        selectedPlanet.body.velocity.set(
-                            shootDir.x * speed,
-                            shootDir.y * speed,
-                            shootDir.z * speed
-                        );
-                        selectedPlanet.body.angularVelocity.set(
-                            (Math.random() - 0.5) * 5,
-                            (Math.random() - 0.5) * 5,
-                            (Math.random() - 0.5) * 5
-                        );
+                            selectedPlanet.mesh.position.copy(origPos);
+                            selectedPlanet.body.position.copy(origPos);
+
+                            selectedPlanet.orbitMode = false;
+                            selectedPlanet.body.type = CANNON.Body.DYNAMIC;
+                            selectedPlanet.body.velocity.set(
+                                shootDir.x * speed,
+                                shootDir.y * speed,
+                                shootDir.z * speed
+                            );
+                            selectedPlanet.body.angularVelocity.set(
+                                (Math.random() - 0.5) * 5,
+                                (Math.random() - 0.5) * 5,
+                                (Math.random() - 0.5) * 5
+                            );
+                        } else {
+                            selectedPlanet.mesh.position.copy(origPos);
+                            selectedPlanet.body.position.copy(origPos);
+                            selectedPlanet.orbitAngle = Math.atan2(origPos.z, origPos.x);
+                            selectedPlanet.orbitMode = true;
+                            selectedPlanet.body.type = CANNON.Body.KINEMATIC;
+                            selectedPlanet.body.velocity.set(0, 0, 0);
+                            selectedPlanet.body.angularVelocity.set(0, 0, 0);
+                        }
                     }
+
+                    try {
+                        if (activePointerId !== null) {
+                            renderer.domElement.releasePointerCapture(activePointerId);
+                        }
+                    } catch (_) { /* ignore */ }
 
                     hideAimVisual();
                     selectedPlanet = null;
                     isDragging = false;
+                    hasValidDragPos = false;
+                    activePointerId = null;
                     controls.enabled = true;
                     renderer.domElement.style.cursor = 'default';
+                }
+
+                renderer.domElement.addEventListener('pointermove', (e) => {
+                    if (isDragging) {
+                        if (activePointerId !== null && e.pointerId !== activePointerId) return;
+                        updatePlanetDrag(e);
+                        return;
+                    }
+                    const planet = getPlanetAtMouse(e);
+                    renderer.domElement.style.cursor = planet ? 'grab' : 'default';
+                });
+
+                renderer.domElement.addEventListener('pointerdown', (e) => {
+                    if (e.button !== 0) return;
+
+                    const planet = getPlanetAtMouse(e);
+                    if (!planet) return;
+
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+
+                    beginPlanetDrag(e, planet);
+                }, true);
+
+                renderer.domElement.addEventListener('pointerup', (e) => {
+                    if (!isDragging) return;
+                    if (activePointerId !== null && e.pointerId !== activePointerId) return;
+                    e.preventDefault();
+                    endPlanetDrag(e);
+                });
+
+                renderer.domElement.addEventListener('pointercancel', (e) => {
+                    if (!isDragging) return;
+                    endPlanetDrag(e);
+                });
+
+                window.addEventListener('pointerup', (e) => {
+                    if (!isDragging) return;
+                    if (activePointerId !== null && e.pointerId !== activePointerId) return;
+                    endPlanetDrag(e);
                 });
 
                 // ==========================================
                 // 动画循环
                 // ==========================================
                 const clock = new THREE.Clock();
+                let elapsedTime = 0;
                 function animate() {
                     requestAnimationFrame(animate);
                     const dt = Math.min(clock.getDelta(), 0.1);
+                    elapsedTime += dt;
 
-                    // 太阳引力
+                    updateOrbitalPlanets(dt);
+                    applySunGravity(dt);
+
                     planets.forEach(p => {
-                        if (p === selectedPlanet || p.isSun) return;
-                        const force = new CANNON.Vec3();
-                        sunBodyRef.position.vsub(p.body.position, force);
-                        const distanceSq = force.lengthSquared();
-                        if (distanceSq > 0.5) {
-                            force.normalize();
-                            const strength = (G * p.body.mass * SUN_MASS) / distanceSq;
-                            force.scale(strength, force);
-                            p.body.applyForce(force, p.body.position);
-                        }
+                        if (p.isSun || p === selectedPlanet || p.burning) return;
+                        applyWhiteHoleRepulsion(p);
                     });
 
                     world.step(1 / 60, dt, 3);
 
-                    // 同步 Three.js 和 Cannon.js
+                    checkSunIncineration();
+                    checkWormholeTeleports(dt);
+                    updateWormholeVisuals(elapsedTime);
+                    updateBurningPlanets(dt);
+                    updateSunVisual(elapsedTime);
+
+                    // 同步 Three.js 和 Cannon.js（拖拽中由指针事件驱动，避免被物理步覆盖）
                     planets.forEach(p => {
+                        if (p.burning) return;
+                        if (p === selectedPlanet && isDragging) return;
                         p.mesh.position.copy(p.body.position);
                         p.mesh.quaternion.copy(p.body.quaternion);
                     });
