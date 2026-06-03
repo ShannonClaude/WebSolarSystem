@@ -28,11 +28,14 @@ A 3D solar system physics sandbox built with Three.js + Cannon.js. Drag planets 
 - Real-time solar gravity acting on all planets
 - Fully elastic collisions between planets (restitution 0.9)
 - Max launch speed: 250 units/sec, with color-coded power indicator (green → yellow → red)
-- 8 planets with initial positions calculated from real orbital periods
+- 9 planets (including Pluto) with initial positions calculated from real orbital periods
 - Visual drag feedback: planet displaces slightly toward cursor during aim (max 35 units)
 - **Wormhole System**: Black hole ↔ White hole teleportation (planets entering black hole exit from white hole on opposite side of Sun)
 - **White Hole Repulsion**: Planets approaching white hole are forcefully repelled
 - **Sun Incineration**: Planets touching the Sun are destroyed
+- **Asteroid Belt**: Located between Earth and Mars orbits (160 asteroids), can be scattered by launched planets
+- **Momentum Impact**: Relative kinetic energy determines damage; planets shatter when HP reaches zero
+- **Planet States**: Solid, solid-liquid (Earth only), and gas giants with distinct visual appearances
 
 ### Local Usage
 
@@ -73,11 +76,14 @@ README.md    — This file
 - 太阳引力实时作用于所有行星
 - 行星间完全弹性碰撞（restitution 0.9）
 - 发射速度最高 250 单位/秒，力度分级显示（绿→黄→红）
-- 8 颗行星初始位置基于真实轨道周期计算
+- 9 颗行星（含冥王星）初始位置基于真实轨道周期计算
 - 拖拽视觉反馈：瞄准时星球随鼠标方向小幅位移（最大 35 单位）
 - **虫洞系统**：黑洞 → 白洞传送（星球进入黑洞会从太阳对侧的白洞弹出）
 - **白洞斥力**：直射白洞会在远处被弹飞，无法靠近
 - **太阳焚烧**：星球触及太阳会被焚毁
+- **小行星带**：位于地球与火星轨道之间（160 颗小行星），可被发射的星球撞散
+- **动量撞击**：相对动能越大伤害越高，HP 归零则碎裂
+- **行星物态**：固体、固液混合（仅地球）、气态巨星，具有不同的视觉外观
 
 ### 本地运行
 
