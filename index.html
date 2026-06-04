@@ -18,7 +18,7 @@
             border-radius: 8px;
             border: 1px solid rgba(255, 255, 255, 0.2);
             backdrop-filter: blur(4px);
-            max-width: 380px;
+            max-width: 400px;
             z-index: 10;
         }
         #planet-legend {
@@ -47,14 +47,15 @@
         <p>💥 <span class="highlight">松开左键</span>：发射星球撞击其他天体</p>
         <p>📷 <span class="highlight">右键拖动空白处</span>：旋转视角</p>
         <p>🔍 <span class="highlight">鼠标滚轮</span>：缩放距离</p>
-        <p>🕳️ <span class="highlight">黑洞 → 白洞</span>：黑洞在最外圈，进入会从太阳对侧白洞弹出</p>
-        <p>⚪ <span class="highlight">白洞斥力</span>：直射白洞会在远处被弹飞，无法靠近</p>
-        <p>☀️ <span class="highlight">太阳焚烧</span>：星球触及太阳会被焚毁</p>
-        <p>☄️ <span class="highlight">小行星带</span>：地球与火星之间，发射星球可撞散（不可拖动）</p>
-        <p>💔 <span class="highlight">动量撞击</span>：相对动能越大伤害越高，HP 归零则碎裂</p>
+        <p>🕳️ <span class="highlight">黑洞 → 白洞</span>：深空虫洞，万有引力牵引/弹开</p>
+        <p>☀️ <span class="highlight">等离子吞噬</span>：无硬碰撞反弹，坠入后熔融缩小、白热化，深入核心才兼并质量</p>
+        <p>🌊 <span class="highlight">洛希极限</span>：靠近太阳/巨行星/黑洞会被潮汐撕裂、持续掉屑</p>
+        <p>☄️ <span class="highlight">小行星带</span>：地球与火星之间，可撞散（不可拖动）</p>
+        <p>🌙 <span class="highlight">卫星系统</span>：月球、火卫一、木卫、土卫六等随母星运动</p>
+        <p>💔 <span class="highlight">N-body + 动量 HP</span>：气态星相撞喷星云；固态星可被潮汐撕碎</p>
         <p class="status" id="sys-status">⏳ 正在初始化 3D 引擎...</p>
         <div id="planet-legend"></div>
-        <p style="color: #ffcc00; font-weight: bold; font-size: 12px;">(拉得越远力度越大；碰撞遵循动量与能量守恒)</p>
+        <p style="color: #ffcc00; font-weight: bold; font-size: 12px;">(公转×0.3 慢放 · 发射行星可被冥王星外黑洞吸入并白洞弹出)</p>
     </div>
 
     <script src="https://cdn.staticfile.net/three.js/r128/three.min.js"></script>
@@ -68,268 +69,301 @@
                 if (typeof CANNON === 'undefined') throw new Error("Cannon.js 物理引擎未加载。");
                 if (typeof THREE.OrbitControls === 'undefined') throw new Error("OrbitControls 视角控制库未加载。");
 
-                document.getElementById('sys-status').innerHTML = "✅ 状态：星球已就绪，选择一个星球开始发射吧！";
+                document.getElementById('sys-status').innerHTML = "✅ 状态：星系已就绪，拖拽行星体验 N-body 引力弹弓！";
 
                 // ==========================================
-                // 场景初始化
+                // 硬核拟真太阳系尺度（轨道提丢斯-波得式指数拉开）
                 // ==========================================
+                const SCALE = 1;
+                const G = 7.2;
+                const GRAV_SOFTENING = 22;
+                const SUN_MASS = 180000;
+                const SUN_RADIUS = 36;
+                const EARTH_RADIUS = SUN_RADIUS / 20;
+                const SUN_ACCRETION_EFFICIENCY = 0.94;
+                const SOLAR_BLAST_MASS_THRESHOLD = 2800;
+                const ROCHE_GAMEPLAY_MULT = 1.65;
+                const ROCHE_DAMAGE_PER_SEC = 420;
+                const MAX_DEBRIS = 400;
+                const MAX_SHOCKWAVES = 12;
+                const PLASMA_DRAG_RETAIN = 0.3;
+                const SOLAR_CORE_FRAC = 0.2;
+                const ABLATION_SHRINK_RATE = 3.2;
+                const ABLATION_EMISSIVE_PEAK = 14;
+                const ORBIT_TIME_SCALE = 0.3;
+                const BLACK_HOLE_MASS = 240000;
+                const WHITE_HOLE_MASS = -55000;
+                const WORMHOLE_GRAV_SOFTENING = 3.5;
+                const WORMHOLE_GRAVITY_RANGE = 500;
+                const WORMHOLE_PULL_BOOST = 3.5;
+                const MAX_LAUNCH_SPEED = 720;
+                const MAX_PULL = 48;
+                const MAX_DRAG = 72;
+                const UNIVERSE_EXTENT = 14000;
+
+                function circularOrbitSpeed(centralMass, orbitRadius, useTimeScale) {
+                    const v = Math.sqrt((G * centralMass) / orbitRadius);
+                    return useTimeScale ? v * ORBIT_TIME_SCALE : v;
+                }
+
                 const scene = new THREE.Scene();
-                scene.fog = new THREE.FogExp2(0x000000, 0.0008);
+                scene.fog = new THREE.FogExp2(0x000000, 0.000035);
 
-                const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 3000);
-                camera.position.set(0, 180, 300);
+                const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, UNIVERSE_EXTENT * 6);
+                camera.position.set(0, 220, 380);
 
                 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
                 renderer.setSize(window.innerWidth, window.innerHeight);
                 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
                 document.body.appendChild(renderer.domElement);
 
-                // OrbitControls: 右键旋转, 中键平移
                 const controls = new THREE.OrbitControls(camera, renderer.domElement);
                 controls.enableDamping = true;
                 controls.dampingFactor = 0.08;
-                controls.mouseButtons = {
-                    LEFT: null,
-                    MIDDLE: THREE.MOUSE.PAN,
-                    RIGHT: THREE.MOUSE.ROTATE
-                };
-                controls.touches = {
-                    ONE: THREE.TOUCH.ROTATE,
-                    TWO: THREE.TOUCH.DOLLY_PAN
-                };
+                controls.maxDistance = 4200;
+                controls.minDistance = 12;
+                controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+                controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
 
-                // ==========================================
-                // 物理世界
-                // ==========================================
                 const world = new CANNON.World();
                 world.gravity.set(0, 0, 0);
                 world.broadphase = new CANNON.NaiveBroadphase();
-                world.solver.iterations = 15;
+                world.solver.iterations = 18;
 
                 const physicsMaterial = new CANNON.Material("standard");
-                const contactMaterial = new CANNON.ContactMaterial(
-                    physicsMaterial, physicsMaterial,
-                    { friction: 0.05, restitution: 0.9 }
-                );
-                world.addContactMaterial(contactMaterial);
-
-                // 太阳碰撞材质（被焚毁前可能有轻微接触）
+                world.addContactMaterial(new CANNON.ContactMaterial(physicsMaterial, physicsMaterial, { friction: 0.05, restitution: 0.9 }));
                 const sunMaterial = new CANNON.Material("sun");
-                const sunContactMaterial = new CANNON.ContactMaterial(
-                    physicsMaterial, sunMaterial,
-                    { friction: 0.1, restitution: 0.2 }
-                );
-                world.addContactMaterial(sunContactMaterial);
+                world.addContactMaterial(new CANNON.ContactMaterial(physicsMaterial, sunMaterial, {
+                    friction: 0, restitution: 0, collisionResponse: false
+                }));
 
-                // ==========================================
-                // 光照
-                // ==========================================
                 const ambientLight = new THREE.AmbientLight(0x444444);
                 scene.add(ambientLight);
-                const sunLight = new THREE.PointLight(0xffffff, 2.5, 1000);
+                const sunLight = new THREE.PointLight(0xffffff, 2.8, UNIVERSE_EXTENT * 4);
                 scene.add(sunLight);
 
-                // ==========================================
-                // 星空背景
-                // ==========================================
                 const starGeo = new THREE.BufferGeometry();
                 const starPos = new Float32Array(6000 * 3);
-                for (let i = 0; i < 6000 * 3; i++) starPos[i] = (Math.random() - 0.5) * 1800;
+                for (let i = 0; i < 6000 * 3; i++) starPos[i] = (Math.random() - 0.5) * UNIVERSE_EXTENT * 2.2;
                 starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-                const starMesh = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.8 }));
+                const starMesh = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.9 }));
                 scene.add(starMesh);
 
-                // ==========================================
-                // 全局变量
-                // ==========================================
                 const planets = [];
-                const G = 12;
-                const SUN_MASS = 1000;
-                const SUN_RADIUS = 12;
+                const moons = [];
+                const gravityBodies = [];
                 let sunBodyRef = null;
                 let sunMeshRef = null;
+                let sunEntity = null;
 
-                // 九大行星（含冥王星）及物态：固 / 固液 / 气（贴近真实分类）
+                function volumeMass(radius, density) {
+                    return density * (4 / 3) * Math.PI * radius * radius * radius;
+                }
+
+                function computeMaxHp(mass, radius, state) {
+                    const base = 95 * Math.pow(mass, 0.67) * radius;
+                    if (state === 'gas') return base * 4.2;
+                    if (state === 'solid-liquid') return base * 1.35;
+                    return base * 1.0;
+                }
+
                 const ephemerisData = [
-                    { name: "水星", nameEn: "Mercury", color: 0xb5b5b5, radius: 0.8, dist: 25, orbitDays: 88, state: "solid", stateLabel: "固" },
-                    { name: "金星", nameEn: "Venus", color: 0xe8cda8, radius: 1.4, dist: 35, orbitDays: 224.7, state: "solid", stateLabel: "固" },
-                    { name: "地球", nameEn: "Earth", color: 0x3d7ea8, radius: 1.5, dist: 50, orbitDays: 365.2, state: "solid-liquid", stateLabel: "固液" },
-                    { name: "火星", nameEn: "Mars", color: 0xc1440e, radius: 1.1, dist: 65, orbitDays: 687, state: "solid", stateLabel: "固" },
-                    { name: "木星", nameEn: "Jupiter", color: 0xd4a574, radius: 4.0, dist: 100, orbitDays: 4331, state: "gas", stateLabel: "气" },
-                    { name: "土星", nameEn: "Saturn", color: 0xf0e6c8, radius: 3.2, dist: 135, orbitDays: 10747, state: "gas", stateLabel: "气" },
-                    { name: "天王星", nameEn: "Uranus", color: 0xa8dde8, radius: 2.2, dist: 170, orbitDays: 30589, state: "gas", stateLabel: "气" },
-                    { name: "海王星", nameEn: "Neptune", color: 0x3d5ced, radius: 2.1, dist: 200, orbitDays: 59800, state: "gas", stateLabel: "气" },
-                    { name: "冥王星", nameEn: "Pluto", color: 0xc9b8a0, radius: 0.55, dist: 232, orbitDays: 90560, state: "solid", stateLabel: "固" }
+                    { name: "水星", nameEn: "Mercury", color: 0xb5b5b5, radius: EARTH_RADIUS * 0.38, dist: 64, orbitDays: 88, state: "solid", stateLabel: "固", density: 5.4 },
+                    { name: "金星", nameEn: "Venus", color: 0xe8cda8, radius: EARTH_RADIUS * 0.95, dist: 78, orbitDays: 224.7, state: "solid", stateLabel: "固", density: 5.2 },
+                    { name: "地球", nameEn: "Earth", color: 0x3d7ea8, radius: EARTH_RADIUS, dist: 94, orbitDays: 365.2, state: "solid-liquid", stateLabel: "固液", density: 5.5 },
+                    { name: "火星", nameEn: "Mars", color: 0xc1440e, radius: EARTH_RADIUS * 0.53, dist: 114, orbitDays: 687, state: "solid", stateLabel: "固", density: 3.9 },
+                    { name: "木星", nameEn: "Jupiter", color: 0xd4a574, radius: EARTH_RADIUS * 11.2, dist: 252, orbitDays: 4331, state: "gas", stateLabel: "气", density: 1.33 },
+                    { name: "土星", nameEn: "Saturn", color: 0xf0e6c8, radius: EARTH_RADIUS * 9.4, dist: 372, orbitDays: 10747, state: "gas", stateLabel: "气", density: 0.69 },
+                    { name: "天王星", nameEn: "Uranus", color: 0xa8dde8, radius: EARTH_RADIUS * 4.0, dist: 542, orbitDays: 30589, state: "gas", stateLabel: "气", density: 1.27 },
+                    { name: "海王星", nameEn: "Neptune", color: 0x3d5ced, radius: EARTH_RADIUS * 3.9, dist: 698, orbitDays: 59800, state: "gas", stateLabel: "气", density: 1.64 },
+                    { name: "冥王星", nameEn: "Pluto", color: 0xc9b8a0, radius: EARTH_RADIUS * 0.18, dist: 848, orbitDays: 90560, state: "solid", stateLabel: "固", density: 1.88 }
                 ];
 
-                const PLUTO_ORBIT = 232;
+                const PLUTO_ORBIT = 848;
+                const moonDefinitions = [
+                    { parentEn: "Earth", name: "月球", nameEn: "Moon", radius: EARTH_RADIUS * 0.27, orbitDist: 10.5, color: 0xbbbbbb, density: 3.3, orbitAngle: 0.8 },
+                    { parentEn: "Mars", name: "火卫一", nameEn: "Phobos", radius: EARTH_RADIUS * 0.07, orbitDist: 3.4, color: 0x8a6f5c, density: 1.9, orbitAngle: 1.2 },
+                    { parentEn: "Jupiter", name: "木卫一", nameEn: "Io", radius: EARTH_RADIUS * 0.28, orbitDist: 14, color: 0xe8d070, density: 3.5, orbitAngle: 0.3 },
+                    { parentEn: "Jupiter", name: "木卫二", nameEn: "Europa", radius: EARTH_RADIUS * 0.24, orbitDist: 19, color: 0xd8e8f0, density: 3.0, orbitAngle: 2.1 },
+                    { parentEn: "Jupiter", name: "木卫三", nameEn: "Ganymede", radius: EARTH_RADIUS * 0.32, orbitDist: 26, color: 0xa89888, density: 1.9, orbitAngle: 4.0 },
+                    { parentEn: "Saturn", name: "土卫六", nameEn: "Titan", radius: EARTH_RADIUS * 0.3, orbitDist: 20, color: 0xc9a86a, density: 1.88, orbitAngle: 1.5 }
+                ];
 
                 function buildPlanetMaterial(state, color) {
-                    const base = {
-                        color,
-                        emissive: 0x000000,
-                        emissiveIntensity: 0
-                    };
+                    const base = { color, emissive: 0x000000, emissiveIntensity: 0 };
                     switch (state) {
-                        case "solid":
-                            return new THREE.MeshStandardMaterial({
-                                ...base, roughness: 0.88, metalness: 0.06
-                            });
-                        case "solid-liquid":
-                            return new THREE.MeshStandardMaterial({
-                                ...base, roughness: 0.48, metalness: 0.18
-                            });
-                        case "gas":
-                            return new THREE.MeshStandardMaterial({
-                                ...base, roughness: 0.18, metalness: 0.02,
-                                transparent: true, opacity: 0.94
-                            });
-                        default:
-                            return new THREE.MeshStandardMaterial({
-                                ...base, roughness: 0.5, metalness: 0.1
-                            });
+                        case "solid": return new THREE.MeshStandardMaterial({ ...base, roughness: 0.88, metalness: 0.06 });
+                        case "solid-liquid": return new THREE.MeshStandardMaterial({ ...base, roughness: 0.48, metalness: 0.18 });
+                        case "gas": return new THREE.MeshStandardMaterial({ ...base, roughness: 0.18, metalness: 0.02, transparent: true, opacity: 0.94 });
+                        default: return new THREE.MeshStandardMaterial({ ...base, roughness: 0.5, metalness: 0.1 });
                     }
                 }
 
                 function addPlanetStateVisuals(mesh, data, radius) {
                     if (data.state === "solid-liquid") {
-                        const ocean = new THREE.Mesh(
+                        mesh.add(new THREE.Mesh(
                             new THREE.SphereGeometry(radius * 1.02, 32, 32),
-                            new THREE.MeshStandardMaterial({
-                                color: 0x1a5f8a, roughness: 0.25, metalness: 0.35,
-                                transparent: true, opacity: 0.55
-                            })
-                        );
-                        mesh.add(ocean);
+                            new THREE.MeshStandardMaterial({ color: 0x1a5f8a, roughness: 0.25, metalness: 0.35, transparent: true, opacity: 0.55 })
+                        ));
                     }
                     if (data.state === "gas") {
-                        const atmosphere = new THREE.Mesh(
+                        mesh.add(new THREE.Mesh(
                             new THREE.SphereGeometry(radius * 1.12, 24, 24),
-                            new THREE.MeshBasicMaterial({
-                                color: data.color, transparent: true, opacity: 0.22, side: THREE.BackSide
-                            })
-                        );
-                        mesh.add(atmosphere);
+                            new THREE.MeshBasicMaterial({ color: data.color, transparent: true, opacity: 0.22, side: THREE.BackSide })
+                        ));
                     }
                     if (data.nameEn === "Saturn") {
                         const ring = new THREE.Mesh(
                             new THREE.RingGeometry(radius * 1.35, radius * 2.05, 64),
-                            new THREE.MeshBasicMaterial({
-                                color: 0xe8dcc0, transparent: true, opacity: 0.55, side: THREE.DoubleSide
-                            })
+                            new THREE.MeshBasicMaterial({ color: 0xe8dcc0, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
                         );
                         ring.rotation.x = Math.PI / 2.2;
                         mesh.add(ring);
                     }
                 }
 
-                // ==========================================
-                // 创建天体
-                // ==========================================
+                function registerGravityBody(entity) {
+                    entity.gravityId = gravityBodies.length;
+                    gravityBodies.push(entity);
+                }
+
                 function createSun() {
                     const color = 0xffcc00;
-                    const radius = SUN_RADIUS;
-                    const geo = new THREE.SphereGeometry(radius, 48, 48);
-                    const mat = new THREE.MeshStandardMaterial({
-                        color, roughness: 0.4, metalness: 0.15,
-                        emissive: color, emissiveIntensity: 1.2
-                    });
-                    const mesh = new THREE.Mesh(geo, mat);
-                    scene.add(mesh);
-
-                    const corona = new THREE.Mesh(
-                        new THREE.SphereGeometry(radius * 1.45, 32, 32),
-                        new THREE.MeshBasicMaterial({
-                            color: 0xff6600, transparent: true, opacity: 0.28, side: THREE.BackSide
-                        })
-                    );
-                    mesh.add(corona);
-                    const flare = new THREE.Mesh(
-                        new THREE.SphereGeometry(radius * 1.15, 24, 24),
-                        new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.5 })
-                    );
-                    mesh.add(flare);
-
-                    const body = new CANNON.Body({ mass: 0, material: sunMaterial });
-                    body.addShape(new CANNON.Sphere(radius));
+                    const body = new CANNON.Body({ mass: SUN_MASS, material: sunMaterial, type: CANNON.Body.KINEMATIC });
+                    body.addShape(new CANNON.Sphere(SUN_RADIUS));
                     body.position.set(0, 0, 0);
+                    body.velocity.set(0, 0, 0);
+
+                    const mesh = new THREE.Mesh(
+                        new THREE.SphereGeometry(SUN_RADIUS, 48, 48),
+                        new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.15, emissive: color, emissiveIntensity: 1.2 })
+                    );
+                    mesh.add(new THREE.Mesh(
+                        new THREE.SphereGeometry(SUN_RADIUS * 1.45, 32, 32),
+                        new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.28, side: THREE.BackSide })
+                    ));
+                    scene.add(mesh);
+                    world.addBody(body);
+
+                    sunEntity = {
+                        name: "太阳", nameEn: "Sun", mesh, body, isSun: true, isMoon: false,
+                        baseColor: color, radius: SUN_RADIUS, mass: SUN_MASS,
+                        baseSunMass: SUN_MASS, baseSunRadius: SUN_RADIUS,
+                        state: "plasma", stateLabel: "等离子体", density: 1.41, orbitMode: false, burning: false
+                    };
                     sunBodyRef = body;
                     sunMeshRef = mesh;
-                    world.addBody(body);
-                    planets.push({
-                        name: "太阳", nameEn: "Sun", mesh, body, isSun: true,
-                        baseColor: color, orbitDist: 0, radius,
-                        state: "plasma", stateLabel: "等离子体"
-                    });
+                    body.entityRef = sunEntity;
+                    planets.push(sunEntity);
+                    registerGravityBody(sunEntity);
                 }
 
                 function createPlanet(data, angle) {
-                    const { name, nameEn, color, radius, dist, state, stateLabel } = data;
-                    const geo = new THREE.SphereGeometry(radius, 48, 48);
-                    const mat = buildPlanetMaterial(state, color);
-                    const mesh = new THREE.Mesh(geo, mat);
+                    const { name, nameEn, color, radius, dist, state, stateLabel, density } = data;
+                    const mass = volumeMass(radius, density);
+                    const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 48, 48), buildPlanetMaterial(state, color));
                     addPlanetStateVisuals(mesh, data, radius);
                     scene.add(mesh);
 
-                    const body = new CANNON.Body({
-                        mass: radius * 8,
-                        material: physicsMaterial,
-                        linearDamping: 0,
-                        angularDamping: 0.05
-                    });
+                    const body = new CANNON.Body({ mass, material: physicsMaterial, linearDamping: 0, angularDamping: 0.05 });
                     body.addShape(new CANNON.Sphere(radius));
-
                     const x = dist * Math.cos(angle);
                     const z = dist * Math.sin(angle);
                     body.position.set(x, 0, z);
 
-                    const planetEntry = {
-                        name, nameEn, mesh, body, isSun: false,
-                        baseColor: color, orbitDist: dist, radius,
-                        state, stateLabel
-                    };
-
-                    planetEntry.maxHp = 420 * body.mass * radius * radius;
-                    planetEntry.hp = planetEntry.maxHp;
-                    body.entityRef = planetEntry;
-
-                    const speed = Math.sqrt((G * SUN_MASS) / dist);
+                    const speed = circularOrbitSpeed(getSunMass(), dist, true);
                     body.velocity.set(-speed * Math.sin(angle), 0, speed * Math.cos(angle));
+
+                    const planetEntry = {
+                        name, nameEn, mesh, body, isSun: false, isMoon: false,
+                        baseColor: color, orbitDist: dist, radius, mass, density, state, stateLabel,
+                        baseRadius: radius, moons: []
+                    };
+                    planetEntry.maxHp = computeMaxHp(mass, radius, state);
+                    planetEntry.hp = planetEntry.maxHp;
                     planetEntry.orbitAngle = angle;
                     planetEntry.orbitSpeed = speed / dist;
                     planetEntry.orbitMode = true;
                     body.type = CANNON.Body.KINEMATIC;
+                    body.entityRef = planetEntry;
 
                     world.addBody(body);
                     planets.push(planetEntry);
+                    registerGravityBody(planetEntry);
 
-                    const orbitGeo = new THREE.RingGeometry(dist - 0.15, dist + 0.15, 80);
-                    const orbitMat = new THREE.MeshBasicMaterial({
-                        color: 0xffffff, transparent: true, opacity: 0.12, side: THREE.DoubleSide
-                    });
-                    const orbitMesh = new THREE.Mesh(orbitGeo, orbitMat);
+                    const ringW = Math.max(0.3, dist * 0.005);
+                    const orbitMesh = new THREE.Mesh(
+                        new THREE.RingGeometry(dist - ringW, dist + ringW, 96),
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.1, side: THREE.DoubleSide })
+                    );
                     orbitMesh.rotation.x = Math.PI / 2;
                     scene.add(orbitMesh);
+                    return planetEntry;
+                }
+
+                function createMoon(def, parent) {
+                    const { name, nameEn, color, radius, orbitDist, density, orbitAngle } = def;
+                    const mass = volumeMass(radius, density);
+                    const mesh = new THREE.Mesh(
+                        new THREE.SphereGeometry(radius, 32, 32),
+                        new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.05 })
+                    );
+                    scene.add(mesh);
+
+                    const body = new CANNON.Body({ mass, material: physicsMaterial, linearDamping: 0, angularDamping: 0.03 });
+                    body.addShape(new CANNON.Sphere(radius));
+
+                    const px = parent.body.position.x + orbitDist * Math.cos(orbitAngle);
+                    const pz = parent.body.position.z + orbitDist * Math.sin(orbitAngle);
+                    body.position.set(px, 0, pz);
+
+                    const moonSpeed = circularOrbitSpeed(parent.mass, orbitDist, true);
+                    body.velocity.set(
+                        parent.body.velocity.x - moonSpeed * Math.sin(orbitAngle),
+                        0,
+                        parent.body.velocity.z + moonSpeed * Math.cos(orbitAngle)
+                    );
+
+                    const moonEntry = {
+                        name, nameEn, mesh, body, parent, isSun: false, isMoon: true,
+                        baseColor: color, radius, mass, density, state: "solid", stateLabel: "固",
+                        baseRadius: radius, orbitDist, orbitAngle, orbitMode: false, burning: false
+                    };
+                    moonEntry.maxHp = computeMaxHp(mass, radius, "solid") * 0.35;
+                    moonEntry.hp = moonEntry.maxHp;
+                    moonEntry.localOffset = new THREE.Vector3(orbitDist * Math.cos(orbitAngle), 0, orbitDist * Math.sin(orbitAngle));
+                    body.entityRef = moonEntry;
+                    body.type = CANNON.Body.DYNAMIC;
+
+                    world.addBody(body);
+                    moons.push(moonEntry);
+                    parent.moons.push(moonEntry);
+                    registerGravityBody(moonEntry);
                 }
 
                 function buildPlanetLegend() {
                     const legend = document.getElementById('planet-legend');
                     if (!legend) return;
                     const stateClass = { "固": "state-solid", "固液": "state-mix", "气": "state-gas" };
-                    legend.innerHTML = '<b>九大行星</b>（太阳对侧为白洞）<br>' +
+                    legend.innerHTML = '<b>九大行星</b> · 拟真比例 · M☉=' + SUN_MASS.toLocaleString() + '<br>' +
                         ephemerisData.map(p => {
                             const cls = stateClass[p.stateLabel] || "state-solid";
                             return `<span class="${cls}">${p.name}(${p.stateLabel})</span>`;
-                        }).join('');
+                        }).join('') + '<br><span style="opacity:0.7">卫星: 月、火卫一、木卫一/二/三、土卫六</span>';
                 }
 
                 function initSolarSystem() {
                     createSun();
                     const now = Date.now();
-                    const daysSinceEpoch = now / (1000 * 60 * 60 * 24);
+                    const days = now / (86400000);
+                    const parentMap = {};
                     ephemerisData.forEach(p => {
-                        const currentAngle = (daysSinceEpoch % p.orbitDays) / p.orbitDays * (Math.PI * 2);
-                        createPlanet(p, currentAngle);
+                        const angle = (days % p.orbitDays) / p.orbitDays * Math.PI * 2;
+                        parentMap[p.nameEn] = createPlanet(p, angle);
+                    });
+                    moonDefinitions.forEach(m => {
+                        const parent = parentMap[m.parentEn];
+                        if (parent) createMoon(m, parent);
                     });
                     buildPlanetLegend();
                 }
@@ -337,359 +371,748 @@
                 initSolarSystem();
 
                 // ==========================================
-                // 黑洞 & 白洞（最外圈轨道之外，太阳对侧对称，不阻挡行星轨道）
+                // 虫洞（深空 + 物理质量参与 N-body）
                 // ==========================================
-                const WORMHOLE_DIST = PLUTO_ORBIT + 48;
+                const WORMHOLE_DIST = PLUTO_ORBIT + 180;
                 const WORMHOLE_ANGLE = Math.PI / 5;
-                const WORMHOLE_CORE_RADIUS = 4.5;
-                const WORMHOLE_CAPTURE_RADIUS = 7;
-                const WHITE_HOLE_REPULSE_RADIUS = 42;
-                const WHITE_HOLE_REPULSE_STRENGTH = 120000;
+                const WORMHOLE_CORE_RADIUS = 8;
+                const WORMHOLE_CAPTURE_RADIUS = 72;
+                const WHITE_HOLE_SPAWN_OFFSET = WORMHOLE_CORE_RADIUS * 1.5;
 
                 const wormholePair = {
-                    black: { position: new THREE.Vector3() },
-                    white: { position: new THREE.Vector3() }
+                    black: { position: new THREE.Vector3(), mass: BLACK_HOLE_MASS },
+                    white: { position: new THREE.Vector3(), mass: WHITE_HOLE_MASS }
                 };
-
-                wormholePair.black.position.set(
-                    WORMHOLE_DIST * Math.cos(WORMHOLE_ANGLE),
-                    0,
-                    WORMHOLE_DIST * Math.sin(WORMHOLE_ANGLE)
-                );
-                wormholePair.white.position.set(
-                    -wormholePair.black.position.x,
-                    0,
-                    -wormholePair.black.position.z
-                );
+                wormholePair.black.position.set(WORMHOLE_DIST * Math.cos(WORMHOLE_ANGLE), 0, WORMHOLE_DIST * Math.sin(WORMHOLE_ANGLE));
+                wormholePair.white.position.set(-wormholePair.black.position.x, 0, -wormholePair.black.position.z);
 
                 function createWormholeVisuals() {
                     const bhGroup = new THREE.Group();
                     bhGroup.position.copy(wormholePair.black.position);
-
-                    const bhCore = new THREE.Mesh(
-                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.55, 32, 32),
-                        new THREE.MeshBasicMaterial({ color: 0x000000 })
-                    );
-                    bhGroup.add(bhCore);
-
-                    const bhDisk = new THREE.Mesh(
-                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 1.6, 0.35, 16, 64),
-                        new THREE.MeshBasicMaterial({ color: 0x9933ff, transparent: true, opacity: 0.85 })
-                    );
+                    bhGroup.add(new THREE.Mesh(new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.55, 32, 32), new THREE.MeshBasicMaterial({ color: 0x000000 })));
+                    const bhDisk = new THREE.Mesh(new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 1.6, 2.4, 16, 64), new THREE.MeshBasicMaterial({ color: 0x9933ff, transparent: true, opacity: 0.85 }));
                     bhDisk.rotation.x = Math.PI / 2.3;
                     bhGroup.add(bhDisk);
-
-                    const bhOuterDisk = new THREE.Mesh(
-                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 2.2, 0.2, 12, 64),
-                        new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.45 })
-                    );
-                    bhOuterDisk.rotation.x = Math.PI / 2.3;
-                    bhGroup.add(bhOuterDisk);
-
-                    const bhGlow = new THREE.Mesh(
-                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 1.8, 24, 24),
-                        new THREE.MeshBasicMaterial({ color: 0x220044, transparent: true, opacity: 0.25, side: THREE.BackSide })
-                    );
-                    bhGroup.add(bhGlow);
-
+                    bhGroup.add(new THREE.Mesh(new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 2.2, 1.2, 12, 64), new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.45 })));
                     scene.add(bhGroup);
                     wormholePair.black.group = bhGroup;
                     wormholePair.black.disk = bhDisk;
-                    wormholePair.black.outerDisk = bhOuterDisk;
 
                     const whGroup = new THREE.Group();
                     whGroup.position.copy(wormholePair.white.position);
-
-                    const whCore = new THREE.Mesh(
-                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.7, 32, 32),
-                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 })
-                    );
-                    whGroup.add(whCore);
-
-                    const whGlow = new THREE.Mesh(
-                        new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 2.5, 24, 24),
-                        new THREE.MeshBasicMaterial({ color: 0xaaccff, transparent: true, opacity: 0.18, side: THREE.BackSide })
-                    );
-                    whGroup.add(whGlow);
-
-                    const whRing = new THREE.Mesh(
-                        new THREE.TorusGeometry(WORMHOLE_CORE_RADIUS * 1.4, 0.25, 16, 48),
-                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 })
-                    );
-                    whRing.rotation.x = Math.PI / 2;
-                    whGroup.add(whRing);
-
-                    const whLight = new THREE.PointLight(0xffffff, 2.2, 120);
-                    whGroup.add(whLight);
-
-                    const whRepulseField = new THREE.Mesh(
-                        new THREE.SphereGeometry(WHITE_HOLE_REPULSE_RADIUS, 32, 32),
-                        new THREE.MeshBasicMaterial({
-                            color: 0xffffff, transparent: true, opacity: 0.04, wireframe: true
-                        })
-                    );
+                    wormholePair.white.core = new THREE.Mesh(new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 0.7, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 }));
+                    whGroup.add(wormholePair.white.core);
+                    whGroup.add(new THREE.Mesh(new THREE.SphereGeometry(WORMHOLE_CORE_RADIUS * 2.5, 24, 24), new THREE.MeshBasicMaterial({ color: 0xaaccff, transparent: true, opacity: 0.18, side: THREE.BackSide })));
+                    const whRepulseField = new THREE.Mesh(new THREE.SphereGeometry(165, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.05, wireframe: true }));
                     whGroup.add(whRepulseField);
                     wormholePair.white.repulseField = whRepulseField;
-
                     scene.add(whGroup);
-                    wormholePair.white.group = whGroup;
-                    wormholePair.white.core = whCore;
-                    wormholePair.white.glow = whGlow;
-                    wormholePair.white.ring = whRing;
-                    wormholePair.white.light = whLight;
 
-                    // 标记虫洞所在的最外圈轨道（细环）
-                    const wormholeBandGeo = new THREE.RingGeometry(WORMHOLE_DIST - 0.6, WORMHOLE_DIST + 0.6, 128);
-                    const wormholeBandMat = new THREE.MeshBasicMaterial({
-                        color: 0x8844ff, transparent: true, opacity: 0.1, side: THREE.DoubleSide
-                    });
-                    const wormholeBand = new THREE.Mesh(wormholeBandGeo, wormholeBandMat);
-                    wormholeBand.rotation.x = Math.PI / 2;
-                    scene.add(wormholeBand);
+                    const band = new THREE.Mesh(
+                        new THREE.RingGeometry(WORMHOLE_DIST - 1, WORMHOLE_DIST + 1, 128),
+                        new THREE.MeshBasicMaterial({ color: 0x8844ff, transparent: true, opacity: 0.08, side: THREE.DoubleSide })
+                    );
+                    band.rotation.x = Math.PI / 2;
+                    scene.add(band);
                 }
-
                 createWormholeVisuals();
 
-                const teleportCooldowns = new Map();
-                const TELEPORT_COOLDOWN = 1.2;
-                const _bhPos = new THREE.Vector3();
-                const _whPos = new THREE.Vector3();
-                const _ejectDir = new THREE.Vector3();
-                const _repulseDir = new THREE.Vector3();
-                const _sunForce = new CANNON.Vec3();
-                const _repulseForce = new CANNON.Vec3();
-                const burningPlanets = [];
+                const _gravDir = new CANNON.Vec3();
+                const _force = new CANNON.Vec3();
+                const fixedGravitySources = [];
 
-                function applyWhiteHoleRepulsion(p) {
-                    if (p.isSun) return;
+                function rebuildFixedGravitySources() {
+                    fixedGravitySources.length = 0;
+                    fixedGravitySources.push({
+                        x: wormholePair.black.position.x, y: 0, z: wormholePair.black.position.z,
+                        mass: BLACK_HOLE_MASS
+                    });
+                    fixedGravitySources.push({
+                        x: wormholePair.white.position.x, y: 0, z: wormholePair.white.position.z,
+                        mass: WHITE_HOLE_MASS
+                    });
+                }
+                rebuildFixedGravitySources();
 
-                    _whPos.copy(wormholePair.white.position);
-                    _repulseDir.set(
-                        p.body.position.x - _whPos.x,
-                        p.body.position.y - _whPos.y,
-                        p.body.position.z - _whPos.z
-                    );
-                    const dist = _repulseDir.length();
-                    if (dist >= WHITE_HOLE_REPULSE_RADIUS || dist < 0.5) return;
+                function shouldReceiveGravity(entity) {
+                    if (!entity.body || entity.burning || entity.isSun) return false;
+                    if (entity === selectedPlanet && isDragging) return false;
+                    if (entity.body.type === CANNON.Body.KINEMATIC && entity.orbitMode) return false;
+                    return true;
+                }
 
-                    const falloff = 1 - dist / WHITE_HOLE_REPULSE_RADIUS;
-                    const strength = WHITE_HOLE_REPULSE_STRENGTH * falloff * falloff;
-                    _repulseDir.multiplyScalar(strength / dist);
+                function applyGravityBetween(receiver, ax, ay, az, massSource, gravOpts) {
+                    if (!shouldReceiveGravity(receiver)) return;
+                    const opts = gravOpts || {};
+                    const soften = opts.soften !== undefined ? opts.soften : GRAV_SOFTENING;
+                    const boost = opts.boost || 1;
 
-                    if (p.orbitMode) {
-                        p.orbitMode = false;
-                        p.body.type = CANNON.Body.DYNAMIC;
+                    _gravDir.set(ax - receiver.body.position.x, ay - receiver.body.position.y, az - receiver.body.position.z);
+                    const distSq = _gravDir.lengthSquared();
+                    const r2 = distSq + soften * soften;
+                    const r = Math.sqrt(r2);
+                    if (r < 0.01) return;
+
+                    let forceMag = (G * receiver.body.mass * massSource) / r2;
+                    if (opts.wormhole && Math.sqrt(distSq) < WORMHOLE_GRAVITY_RANGE) forceMag *= WORMHOLE_PULL_BOOST;
+                    forceMag *= boost;
+                    _gravDir.scale(forceMag / r, _gravDir);
+                    receiver.body.applyForce(_gravDir, receiver.body.position);
+                }
+
+                function applyWormholeGravity(receiver, ax, ay, az, massSource) {
+                    applyGravityBetween(receiver, ax, ay, az, massSource, {
+                        soften: WORMHOLE_GRAV_SOFTENING, wormhole: true
+                    });
+                }
+
+                function applyUniversalGravity() {
+                    const n = gravityBodies.length;
+                    for (let i = 0; i < n; i++) {
+                        const a = gravityBodies[i];
+                        if (a.burning || !a.body) continue;
+
+                        const ax = a.body.position.x, ay = a.body.position.y, az = a.body.position.z;
+                        const ma = a.body.mass;
+
+                        for (let j = i + 1; j < n; j++) {
+                            const b = gravityBodies[j];
+                            if (b.burning || !b.body) continue;
+
+                            _gravDir.set(b.body.position.x - ax, b.body.position.y - ay, b.body.position.z - az);
+                            const r2 = _gravDir.lengthSquared() + GRAV_SOFTENING * GRAV_SOFTENING;
+                            const r = Math.sqrt(r2);
+                            if (r < 0.01) continue;
+
+                            const f = (G * ma * b.body.mass) / r2;
+                            _gravDir.scale(f / r, _force);
+
+                            if (shouldReceiveGravity(a)) a.body.applyForce(_force, a.body.position);
+                            _force.scale(-1, _force);
+                            if (shouldReceiveGravity(b)) b.body.applyForce(_force, b.body.position);
+                        }
+
+                        for (let k = 0; k < fixedGravitySources.length; k++) {
+                            const src = fixedGravitySources[k];
+                            applyWormholeGravity(a, src.x, src.y, src.z, src.mass);
+                        }
                     }
 
-                    p.body.applyForce(
-                        _repulseForce.set(_repulseDir.x, _repulseDir.y, _repulseDir.z),
-                        p.body.position
-                    );
+                    for (let i = 0; i < debrisPieces.length; i++) {
+                        const d = debrisPieces[i];
+                        const rec = { body: d.body, burning: false, orbitMode: false };
+                        for (let j = 0; j < gravityBodies.length; j++) {
+                            const g = gravityBodies[j];
+                            if (g.burning) continue;
+                            applyGravityBetween(rec, g.body.position.x, g.body.position.y, g.body.position.z, g.body.mass);
+                        }
+                        for (let k = 0; k < fixedGravitySources.length; k++) {
+                            const src = fixedGravitySources[k];
+                            applyWormholeGravity(rec, src.x, src.y, src.z, src.mass);
+                        }
+                    }
+
+                    for (let i = 0; i < asteroids.length; i++) {
+                        const a = asteroids[i];
+                        if (!a.scattered) continue;
+                        const rec = { body: a.body, burning: false, orbitMode: false };
+                        for (let j = 0; j < gravityBodies.length; j++) {
+                            const g = gravityBodies[j];
+                            if (g.burning) continue;
+                            applyGravityBetween(rec, g.body.position.x, g.body.position.y, g.body.position.z, g.body.mass);
+                        }
+                        for (let k = 0; k < fixedGravitySources.length; k++) {
+                            const src = fixedGravitySources[k];
+                            applyWormholeGravity(rec, src.x, src.y, src.z, src.mass);
+                        }
+                    }
                 }
 
                 function updateOrbitalPlanets(dt) {
                     planets.forEach(p => {
                         if (p.isSun || !p.orbitMode || p === selectedPlanet || p.burning) return;
-
                         p.orbitAngle += p.orbitSpeed * dt;
                         const d = p.orbitDist;
                         const x = d * Math.cos(p.orbitAngle);
                         const z = d * Math.sin(p.orbitAngle);
-                        const speed = Math.sqrt((G * SUN_MASS) / d);
-
+                        const speed = circularOrbitSpeed(getSunMass(), d, true);
                         p.body.position.set(x, 0, z);
                         p.body.velocity.set(-speed * Math.sin(p.orbitAngle), 0, speed * Math.cos(p.orbitAngle));
                         p.body.angularVelocity.set(0, 0, 0);
+                        syncMoonsToParent(p, true);
                     });
                 }
 
-                function applySunGravity(dt) {
-                    planets.forEach(p => {
-                        if (p.isSun || p.orbitMode || p === selectedPlanet || p.burning) return;
-
-                        _sunForce.set(0, 0, 0);
-                        sunBodyRef.position.vsub(p.body.position, _sunForce);
-                        const distanceSq = _sunForce.lengthSquared();
-                        if (distanceSq > 0.5) {
-                            _sunForce.normalize();
-                            const strength = (G * p.body.mass * SUN_MASS) / distanceSq;
-                            _sunForce.scale(strength, _sunForce);
-                            p.body.applyForce(_sunForce, p.body.position);
+                function syncMoonsToParent(parent, inheritVelocity) {
+                    if (!parent.moons) return;
+                    parent.moons.forEach(m => {
+                        if (m.burning) return;
+                        m.body.position.set(
+                            parent.body.position.x + m.localOffset.x,
+                            parent.body.position.y + m.localOffset.y,
+                            parent.body.position.z + m.localOffset.z
+                        );
+                        if (inheritVelocity) {
+                            const moonSpeed = circularOrbitSpeed(parent.mass, m.orbitDist, true);
+                            const angle = Math.atan2(m.localOffset.z, m.localOffset.x);
+                            m.body.velocity.set(
+                                parent.body.velocity.x - moonSpeed * Math.sin(angle),
+                                0,
+                                parent.body.velocity.z + moonSpeed * Math.cos(angle)
+                            );
                         }
                     });
                 }
 
                 // ==========================================
-                // 动量定理 & 碰撞 HP（质心系相对动能 → 伤害）
+                // 碰撞 HP（动量定理）
                 // ==========================================
-                const ENERGY_TO_DAMAGE = 0.22;
-                const MIN_IMPACT_SPEED = 4;
+                const ENERGY_TO_DAMAGE = 0.065;
+                const MIN_IMPACT_SPEED = 5;
                 const COLLISION_COOLDOWN = 0.14;
+                const GAS_DAMAGE_ABSORB = 0.55;
                 const collisionPairCooldowns = new Map();
                 const debrisPieces = [];
+                const shockwaves = [];
                 const _relVel = new CANNON.Vec3();
+                const _tidalVec = new THREE.Vector3();
                 const _normal = new CANNON.Vec3();
+                const teleportCooldowns = new Map();
+                const TELEPORT_COOLDOWN = 1.2;
+                const burningPlanets = [];
+                const solarAblating = [];
+                const _flareTangent = new THREE.Vector3();
+                const _flareRadial = new THREE.Vector3();
+                const _whOutward = new THREE.Vector3();
 
-                function collisionPairKey(idA, idB) {
-                    return idA < idB ? idA + '|' + idB : idB + '|' + idA;
-                }
-
-                function getPlanetFromBody(body) {
+                function getDamageableFromBody(body) {
                     const ref = body.entityRef;
                     return ref && !ref.isSun && !ref.burning ? ref : null;
                 }
 
-                /** 约化质量 μ = m1·m2/(m1+m2)；质心系相对动能 K = ½μv² */
                 function computeImpactEnergy(m1, m2, vApproach) {
                     if (vApproach < MIN_IMPACT_SPEED) return 0;
-                    const mu = (m1 * m2) / (m1 + m2);
-                    return 0.5 * mu * vApproach * vApproach;
+                    return 0.5 * (m1 * m2) / (m1 + m2) * vApproach * vApproach;
                 }
 
-                /** 沿碰撞法线的接近速度（标量，越大表示撞得越狠） */
                 function getApproachSpeed(bodyA, bodyB) {
-                    _normal.set(
-                        bodyA.position.x - bodyB.position.x,
-                        bodyA.position.y - bodyB.position.y,
-                        bodyA.position.z - bodyB.position.z
-                    );
+                    _normal.set(bodyA.position.x - bodyB.position.x, bodyA.position.y - bodyB.position.y, bodyA.position.z - bodyB.position.z);
                     const dist = _normal.length();
                     if (dist < 0.001) return 0;
                     _normal.scale(1 / dist, _normal);
-
-                    _relVel.set(
-                        bodyA.velocity.x - bodyB.velocity.x,
-                        bodyA.velocity.y - bodyB.velocity.y,
-                        bodyA.velocity.z - bodyB.velocity.z
-                    );
+                    _relVel.set(bodyA.velocity.x - bodyB.velocity.x, bodyA.velocity.y - bodyB.velocity.y, bodyA.velocity.z - bodyB.velocity.z);
                     return Math.max(0, _relVel.dot(_normal));
                 }
 
-                function wakePlanetFromOrbit(planet) {
-                    if (!planet.orbitMode) return;
-                    planet.orbitMode = false;
-                    planet.body.type = CANNON.Body.DYNAMIC;
+                function wakeFromOrbit(entity) {
+                    if (!entity.orbitMode) return;
+                    entity.orbitMode = false;
+                    entity.body.type = CANNON.Body.DYNAMIC;
+                    const px = entity.body.position.x;
+                    const pz = entity.body.position.z;
+                    const d = Math.sqrt(px * px + pz * pz) || entity.orbitDist || 1;
+                    const angle = Math.atan2(pz, px);
+                    const fullSpeed = circularOrbitSpeed(getSunMass(), d, false);
+                    entity.body.velocity.set(
+                        -fullSpeed * Math.sin(angle), entity.body.velocity.y,
+                        fullSpeed * Math.cos(angle)
+                    );
                 }
 
-                function applyDamageToPlanet(planet, damage, impactPos) {
-                    if (planet.isSun || planet.burning || damage <= 0) return;
-                    if (planet === selectedPlanet && isDragging) return;
+                function getSunMass() {
+                    return sunEntity ? sunEntity.mass : SUN_MASS;
+                }
 
-                    wakePlanetFromOrbit(planet);
-                    planet.hp = Math.max(0, planet.hp - damage);
+                function getSunRadius() {
+                    return sunEntity ? sunEntity.radius : SUN_RADIUS;
+                }
 
-                    if (planet.hp <= 0) {
-                        shatterPlanet(planet, impactPos);
+                function triggersSolarMegaExplosion(entity) {
+                    return entity.state === 'gas' || entity.mass >= SOLAR_BLAST_MASS_THRESHOLD;
+                }
+
+                function updateSunPhysicsShape(newRadius) {
+                    if (!sunBodyRef) return;
+                    sunBodyRef.shapes.length = 0;
+                    sunBodyRef.addShape(new CANNON.Sphere(newRadius));
+                }
+
+                function createEnergyGlowMaterial(color, opacity, side) {
+                    return new THREE.MeshBasicMaterial({
+                        color,
+                        transparent: true,
+                        opacity,
+                        blending: THREE.AdditiveBlending,
+                        depthWrite: false,
+                        side: side || THREE.BackSide
+                    });
+                }
+
+                function setEntityEmissive(entity, hex, intensity, opacity) {
+                    const mat = entity.mesh.material;
+                    if (!mat) return;
+                    if (mat.emissive) mat.emissive.setHex(hex);
+                    mat.emissiveIntensity = intensity;
+                    mat.transparent = true;
+                    if (opacity !== undefined) mat.opacity = opacity;
+                }
+
+                function removeSolarAblation(entity) {
+                    entity.solarAblation = false;
+                    const idx = solarAblating.indexOf(entity);
+                    if (idx !== -1) solarAblating.splice(idx, 1);
+                }
+
+                function beginSolarAblation(entity) {
+                    if (entity.solarAblation || entity.burning || entity.isSun) return;
+                    entity.solarAblation = true;
+                    entity.ablationMega = triggersSolarMegaExplosion(entity);
+                    entity.ablationSparkTimer = 0;
+                    wakeFromOrbit(entity);
+                    if (solarAblating.indexOf(entity) === -1) solarAblating.push(entity);
+                }
+
+                function finalizeSolarIngestion(entity) {
+                    if (entity.burning) return;
+                    removeSolarAblation(entity);
+                    const impactPos = {
+                        x: entity.body.position.x,
+                        y: entity.body.position.y,
+                        z: entity.body.position.z
+                    };
+                    const mega = entity.ablationMega || triggersSolarMegaExplosion(entity);
+                    if (mega) spawnSolarMegaExplosion(impactPos, entity);
+                    accreteMassOntoSun(entity.mass);
+                    destroyEntity(entity, 'burn', { mega, impactPos });
+                }
+
+                function updateSolarAblation(dt) {
+                    for (let i = solarAblating.length - 1; i >= 0; i--) {
+                        const entity = solarAblating[i];
+                        if (!entity.body || entity.burning) {
+                            solarAblating.splice(i, 1);
+                            continue;
+                        }
+
+                        const sr = getSunRadius();
+                        const dist = Math.sqrt(
+                            entity.body.position.x ** 2 +
+                            entity.body.position.y ** 2 +
+                            entity.body.position.z ** 2
+                        );
+
+                        if (dist >= sr + entity.radius * 0.4) {
+                            removeSolarAblation(entity);
+                            const mat = entity.mesh.material;
+                            if (mat && mat.emissive) {
+                                mat.emissive.setHex(0x000000);
+                                mat.emissiveIntensity = 0;
+                                mat.opacity = entity.state === 'gas' ? 0.94 : 1;
+                            }
+                            entity.mesh.scale.setScalar(entity.radius / entity.baseRadius);
+                            continue;
+                        }
+
+                        const depth = Math.min(1, 1 - dist / sr);
+                        const v = entity.body.velocity;
+                        v.set(v.x * PLASMA_DRAG_RETAIN, v.y * PLASMA_DRAG_RETAIN, v.z * PLASMA_DRAG_RETAIN);
+
+                        const shrink = ABLATION_SHRINK_RATE * (0.35 + depth * 1.8) * dt;
+                        entity.radius = Math.max(entity.baseRadius * 0.04, entity.radius * (1 - shrink));
+                        entity.mesh.scale.setScalar(entity.radius / entity.baseRadius);
+                        entity.mass = volumeMass(entity.radius, entity.density || 3);
+                        entity.body.mass = Math.max(0.01, entity.mass);
+                        if (entity.body.shapes.length) {
+                            entity.body.shapes.length = 0;
+                            entity.body.addShape(new CANNON.Sphere(Math.max(0.05, entity.radius)));
+                        }
+
+                        const emissiveHex = depth > 0.35 ? 0xffffff : 0xffffcc;
+                        setEntityEmissive(entity, emissiveHex, ABLATION_EMISSIVE_PEAK + depth * 6, Math.max(0.12, 1 - depth * 0.92));
+
+                        if (entity.ablationMega) {
+                            entity.ablationSparkTimer = (entity.ablationSparkTimer || 0) - dt;
+                            if (entity.ablationSparkTimer <= 0) {
+                                entity.ablationSparkTimer = 0.12;
+                                spawnDebris(entity, {
+                                    x: entity.body.position.x,
+                                    y: entity.body.position.y,
+                                    z: entity.body.position.z
+                                }, { kind: 'plasma', countMul: 0.15, speedMul: 0.55 });
+                            }
+                        }
+
+                        if (dist < sr * SOLAR_CORE_FRAC) {
+                            finalizeSolarIngestion(entity);
+                            solarAblating.splice(i, 1);
+                        }
                     }
                 }
 
-                function spawnDebris(planet, impactPos) {
-                    const baseR = planet.radius;
-                    const count = Math.min(14, Math.max(6, Math.floor(baseR * 3)));
+                function accreteMassOntoSun(ingestedMass) {
+                    if (!sunEntity || !sunBodyRef || !sunMeshRef || ingestedMass <= 0) return;
+                    const oldMass = sunEntity.mass;
+                    const added = ingestedMass * SUN_ACCRETION_EFFICIENCY;
+                    const newMass = oldMass + added;
+                    const massRatio = newMass / sunEntity.baseSunMass;
+                    const newRadius = sunEntity.baseSunRadius * Math.cbrt(massRatio);
+                    sunEntity.mass = newMass;
+                    sunEntity.radius = newRadius;
+                    sunBodyRef.mass = newMass;
+                    updateSunPhysicsShape(newRadius);
+                    const visualScale = newRadius / sunEntity.baseSunRadius;
+                    sunMeshRef.scale.setScalar(visualScale);
+                    sunLight.intensity = Math.min(5.5, 2.5 + Math.log1p(massRatio) * 1.8);
+                }
+
+                function applyGasMassLoss(planet, damage, collapseMul) {
+                    const mul = collapseMul || 1;
+                    const loss = Math.min(0.12 * mul, damage / planet.maxHp * 0.16 * mul);
+                    planet.radius = Math.max(planet.baseRadius * 0.42, planet.radius * (1 - loss));
+                    const s = planet.radius / planet.baseRadius;
+                    planet.mesh.scale.setScalar(s);
+                    planet.mass = volumeMass(planet.radius, planet.density);
+                    planet.body.mass = planet.mass;
+                    const shape = planet.body.shapes[0];
+                    if (shape && shape.radius !== undefined) {
+                        planet.body.shapes.length = 0;
+                        planet.body.addShape(new CANNON.Sphere(planet.radius));
+                    }
+                }
+
+                function applyDamageToEntity(entity, damage, impactPos) {
+                    if (entity.isSun || entity.burning || damage <= 0) return;
+                    if (entity === selectedPlanet && isDragging) return;
+                    wakeFromOrbit(entity);
+
+                    if (entity.state === 'gas') {
+                        const absorbed = damage * GAS_DAMAGE_ABSORB;
+                        const effective = damage - absorbed;
+                        entity.hp = Math.max(0, entity.hp - effective);
+                        const collapseMul = damage > entity.maxHp * 0.12 ? 1.75 : 1.15;
+                        applyGasMassLoss(entity, damage, collapseMul);
+                        if (damage > entity.maxHp * 0.04) {
+                            spawnDebris(entity, impactPos, { kind: 'gas', countMul: 0.35 + damage / entity.maxHp, speedMul: 0.9 });
+                        }
+                        if (entity.hp <= 0) shatterPlanet(entity, impactPos);
+                        return;
+                    }
+
+                    entity.hp = Math.max(0, entity.hp - damage);
+                    if (entity.hp <= 0) shatterPlanet(entity, impactPos);
+                }
+
+                function disposeDebrisPiece(d) {
+                    scene.remove(d.mesh);
+                    world.removeBody(d.body);
+                    if (d.mesh.geometry && d.mesh.geometry !== _debrisSolidGeo && d.mesh.geometry !== _debrisGasGeo) {
+                        d.mesh.geometry.dispose();
+                    }
+                    if (d.mesh.material && d.mesh.material.dispose) d.mesh.material.dispose();
+                }
+
+                function pruneDebrisBudget(needed) {
+                    while (debrisPieces.length + needed > MAX_DEBRIS && debrisPieces.length > 0) {
+                        disposeDebrisPiece(debrisPieces.shift());
+                    }
+                }
+
+                const _debrisSolidGeo = new THREE.IcosahedronGeometry(1, 0);
+                const _debrisGasGeo = new THREE.SphereGeometry(1, 10, 10);
+
+                function spawnDebris(planet, impactPos, options) {
+                    const opts = options || {};
+                    const kind = opts.kind || (planet.state === 'gas' ? 'gas' : 'solid');
+                    const isGas = kind === 'gas' || kind === 'gas-plume' || kind === 'plasma';
+                    const isPlasma = kind === 'plasma';
+                    const baseR = planet.radius || 1;
+                    const countMul = opts.countMul || 1;
+                    const speedMul = opts.speedMul || 1;
+                    let count = Math.floor((isGas ? baseR * 3.2 : baseR * 2.5) * countMul);
+                    count = Math.min(isPlasma ? 55 : 28, Math.max(isPlasma ? 18 : 4, count));
+                    pruneDebrisBudget(count);
+
                     const px = impactPos ? impactPos.x : planet.body.position.x;
                     const py = impactPos ? impactPos.y : planet.body.position.y;
                     const pz = impactPos ? impactPos.z : planet.body.position.z;
+                    const geo = isGas ? _debrisGasGeo : _debrisSolidGeo;
+                    const baseSpeed = (isPlasma ? 95 : isGas ? 38 : 25) * speedMul;
+                    const lifeBase = isPlasma ? 4.5 : isGas ? 3.8 : 2.8;
 
                     for (let i = 0; i < count; i++) {
-                        const r = baseR * (0.15 + Math.random() * 0.35);
-                        const geo = new THREE.IcosahedronGeometry(r, 0);
-                        const mat = new THREE.MeshStandardMaterial({
-                            color: planet.baseColor,
-                            roughness: 0.9,
-                            emissive: 0xff6622,
-                            emissiveIntensity: 0.4
-                        });
+                        const sizeScale = isGas
+                            ? baseR * (0.35 + Math.random() * 0.55)
+                            : baseR * (0.12 + Math.random() * 0.28);
+                        let mat;
+                        if (isPlasma) {
+                            const plasmaColor = Math.random() > 0.3 ? 0xffffee : (Math.random() > 0.5 ? 0xffdd66 : 0xff6622);
+                            mat = createEnergyGlowMaterial(plasmaColor, 0.35 + Math.random() * 0.45, THREE.BackSide);
+                        } else if (isGas) {
+                            mat = new THREE.MeshStandardMaterial({
+                                color: planet.baseColor, roughness: 0.05, metalness: 0.05,
+                                transparent: true, opacity: 0.15 + Math.random() * 0.15,
+                                emissive: planet.baseColor, emissiveIntensity: 0.15 + Math.random() * 0.25,
+                                side: THREE.BackSide, depthWrite: false
+                            });
+                        } else {
+                            mat = new THREE.MeshStandardMaterial({
+                                color: planet.baseColor, roughness: 0.9, metalness: 0.05,
+                                transparent: true, opacity: 1
+                            });
+                        }
                         const mesh = new THREE.Mesh(geo, mat);
+                        mesh.scale.setScalar(sizeScale);
+                        const jitter = baseR * (isPlasma ? 2.5 : 1.8);
                         mesh.position.set(
-                            px + (Math.random() - 0.5) * baseR * 2,
-                            py + (Math.random() - 0.5) * baseR * 2,
-                            pz + (Math.random() - 0.5) * baseR * 2
+                            px + (Math.random() - 0.5) * jitter,
+                            py + (Math.random() - 0.5) * jitter * 0.6,
+                            pz + (Math.random() - 0.5) * jitter
                         );
                         scene.add(mesh);
-
-                        const body = new CANNON.Body({ mass: r * 2, material: physicsMaterial });
-                        body.addShape(new CANNON.Sphere(r));
+                        const physR = Math.max(0.15, sizeScale * (isGas ? 0.35 : 0.85));
+                        const body = new CANNON.Body({ mass: physR * (isGas ? 0.4 : 2), material: physicsMaterial });
+                        body.addShape(new CANNON.Sphere(physR));
                         body.position.copy(mesh.position);
-                        const spd = 20 + Math.random() * 40;
-                        const theta = Math.random() * Math.PI * 2;
-                        const phi = Math.random() * Math.PI;
+                        const spd = baseSpeed + Math.random() * (isPlasma ? 120 : 50);
+                        const th = Math.random() * Math.PI * 2;
+                        const ph = (Math.random() - 0.5) * Math.PI;
                         body.velocity.set(
-                            Math.sin(phi) * Math.cos(theta) * spd,
-                            Math.abs(Math.cos(phi)) * spd * 0.5,
-                            Math.sin(phi) * Math.sin(theta) * spd
+                            Math.cos(th) * Math.cos(ph) * spd,
+                            Math.sin(ph) * spd * 0.65 + (Math.random() - 0.5) * 25,
+                            Math.sin(th) * Math.cos(ph) * spd
                         );
                         world.addBody(body);
-
-                        debrisPieces.push({ mesh, body, life: 2.5 + Math.random(), maxLife: 3 });
+                        debrisPieces.push({
+                            mesh, body, kind, sizeScale,
+                            life: lifeBase + Math.random() * 1.2,
+                            maxLife: lifeBase + 1.2,
+                            spin: (Math.random() - 0.5) * 0.08,
+                            flarePhase: Math.random() * Math.PI * 2,
+                            swirlAmp: 28 + Math.random() * 42,
+                            flareFreq: 3.5 + Math.random() * 4
+                        });
                     }
                 }
 
-                function updateDebris(dt) {
-                    for (let i = debrisPieces.length - 1; i >= 0; i--) {
-                        const d = debrisPieces[i];
-                        _sunForce.set(0, 0, 0);
-                        sunBodyRef.position.vsub(d.body.position, _sunForce);
-                        const d2 = _sunForce.lengthSquared();
-                        if (d2 > 0.5) {
-                            _sunForce.normalize();
-                            const strength = (G * d.body.mass * SUN_MASS) / d2;
-                            _sunForce.scale(strength, _sunForce);
-                            d.body.applyForce(_sunForce, d.body.position);
-                        }
-                        d.life -= dt;
-                        d.mesh.position.copy(d.body.position);
-                        d.mesh.quaternion.copy(d.body.quaternion);
-                        const t = 1 - d.life / d.maxLife;
-                        d.mesh.material.opacity = Math.max(0, 1 - t);
-                        d.mesh.material.transparent = true;
-                        if (d.life <= 0) {
-                            scene.remove(d.mesh);
-                            world.removeBody(d.body);
-                            debrisPieces.splice(i, 1);
+                function spawnRocheStripDebris(small, largePos, largeRadius, largeColor) {
+                    if (small.burning) return;
+                    pruneDebrisBudget(2);
+                    const t = 0.25 + Math.random() * 0.55;
+                    const px = small.body.position.x + (largePos.x - small.body.position.x) * t;
+                    const py = small.body.position.y + (largePos.y - small.body.position.y) * t;
+                    const pz = small.body.position.z + (largePos.z - small.body.position.z) * t;
+                    const r = small.radius * (0.04 + Math.random() * 0.08);
+                    const mat = new THREE.MeshStandardMaterial({
+                        color: small.baseColor || largeColor || 0xaaaaaa,
+                        roughness: 0.92, transparent: true, opacity: 0.85
+                    });
+                    const mesh = new THREE.Mesh(_debrisSolidGeo, mat);
+                    mesh.scale.setScalar(r);
+                    mesh.position.set(px, py, pz);
+                    scene.add(mesh);
+                    const body = new CANNON.Body({ mass: r * 1.5, material: physicsMaterial });
+                    body.addShape(new CANNON.Sphere(r));
+                    body.position.copy(mesh.position);
+                    _tidalVec.set(small.body.position.x - largePos.x, small.body.position.y - largePos.y, small.body.position.z - largePos.z);
+                    if (_tidalVec.lengthSq() < 0.01) _tidalVec.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+                    _tidalVec.normalize();
+                    const tangent = new THREE.Vector3(-_tidalVec.z, 0.15, _tidalVec.x).normalize();
+                    const spd = 12 + Math.random() * 22;
+                    body.velocity.set(
+                        tangent.x * spd + _tidalVec.x * 8,
+                        (Math.random() - 0.5) * 10,
+                        tangent.z * spd + _tidalVec.z * 8
+                    );
+                    world.addBody(body);
+                    debrisPieces.push({ mesh, body, kind: 'roche', sizeScale: r, life: 1.8, maxLife: 2, spin: 0.12 });
+                }
+
+                function computeRocheLimit(largeRadius, largeDensity, smallDensity) {
+                    const rhoRatio = Math.max(0.15, largeDensity / Math.max(0.5, smallDensity));
+                    const formula = 1.2 * largeRadius * Math.cbrt(rhoRatio);
+                    return Math.max(formula, ROCHE_GAMEPLAY_MULT * largeRadius);
+                }
+
+                function canBeRocheDisrupted(entity) {
+                    if (!entity || entity.isSun || entity.burning) return false;
+                    if (entity.orbitMode) return false;
+                    if (entity.state === 'gas') return false;
+                    return entity.state === 'solid' || entity.state === 'solid-liquid' || entity.isMoon;
+                }
+
+                function checkRocheLimitTidalDisruption(dt) {
+                    const candidates = [];
+                    planets.forEach(p => { if (!p.isSun && !p.burning) candidates.push(p); });
+                    moons.forEach(m => { if (!m.burning) candidates.push(m); });
+
+                    const sources = [];
+                    if (sunEntity && !sunEntity.burning) {
+                        sources.push({
+                            x: 0, y: 0, z: 0, radius: sunEntity.radius, density: sunEntity.density || 1.41,
+                            color: sunEntity.baseColor, name: 'sun'
+                        });
+                    }
+                    planets.forEach(p => {
+                        if (p.isSun || p.burning || p.state !== 'gas' || p.radius < EARTH_RADIUS * 6) return;
+                        sources.push({
+                            x: p.body.position.x, y: p.body.position.y, z: p.body.position.z,
+                            radius: p.radius, density: p.density, color: p.baseColor, name: p.nameEn
+                        });
+                    });
+                    const bh = wormholePair.black.position;
+                    sources.push({
+                        x: bh.x, y: bh.y, z: bh.z,
+                        radius: WORMHOLE_CORE_RADIUS * 1.75, density: 8e3, color: 0x9933ff, name: 'blackhole'
+                    });
+
+                    for (let c = 0; c < candidates.length; c++) {
+                        const victim = candidates[c];
+                        if (!canBeRocheDisrupted(victim)) continue;
+                        if (victim === selectedPlanet && isDragging) continue;
+
+                        for (let s = 0; s < sources.length; s++) {
+                            const src = sources[s];
+                            const dx = victim.body.position.x - src.x;
+                            const dy = victim.body.position.y - src.y;
+                            const dz = victim.body.position.z - src.z;
+                            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                            const rocheR = computeRocheLimit(src.radius, src.density, victim.density || 3);
+                            if (dist > rocheR || dist < src.radius * 0.85) continue;
+
+                            wakeFromOrbit(victim);
+                            const proximity = 1 - (dist - src.radius) / (rocheR - src.radius + 0.001);
+                            const dmg = ROCHE_DAMAGE_PER_SEC * proximity * proximity * dt;
+                            victim.hp = Math.max(0, victim.hp - dmg);
+                            const largePos = { x: src.x, y: src.y, z: src.z };
+                            if (Math.random() < 0.55 + proximity * 0.35) {
+                                spawnRocheStripDebris(victim, largePos, src.radius, src.color);
+                            }
+                            if (victim.radius > victim.baseRadius * 0.35) {
+                                const peel = 0.003 * proximity * dt;
+                                victim.radius = Math.max(victim.baseRadius * 0.32, victim.radius * (1 - peel));
+                                const sc = victim.radius / victim.baseRadius;
+                                victim.mesh.scale.setScalar(sc);
+                                victim.mass = volumeMass(victim.radius, victim.density || 3);
+                                victim.body.mass = victim.mass;
+                            }
+                            if (victim.hp <= 0) {
+                                shatterPlanet(victim, {
+                                    x: victim.body.position.x * 0.65 + src.x * 0.35,
+                                    y: victim.body.position.y * 0.65 + src.y * 0.35,
+                                    z: victim.body.position.z * 0.65 + src.z * 0.35
+                                });
+                            }
+                            break;
                         }
                     }
                 }
 
-                function resolvePlanetCollision(planetA, planetB, impactEnergy) {
-                    const m1 = planetA.body.mass;
-                    const m2 = planetB.body.mass;
-                    const totalM = m1 + m2;
+                function spawnSolarMegaExplosion(impactPos, victim) {
+                    if (shockwaves.length >= MAX_SHOCKWAVES) {
+                        const old = shockwaves.shift();
+                        scene.remove(old.mesh);
+                        old.mesh.geometry.dispose();
+                        old.mesh.material.dispose();
+                    }
+                    const blastColors = [0xffffee, 0xffdd44, 0xff4422];
+                    for (let layer = 0; layer < 3; layer++) {
+                        const baseOpacity = 0.85 - layer * 0.15;
+                        const mat = createEnergyGlowMaterial(blastColors[layer], baseOpacity, THREE.BackSide);
+                        const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 40, 40), mat);
+                        mesh.position.set(impactPos.x, impactPos.y, impactPos.z);
+                        scene.add(mesh);
+                        shockwaves.push({
+                            mesh, age: 0, baseOpacity,
+                            maxAge: 1.35 + layer * 0.25,
+                            expandSpeed: 165 + layer * 55,
+                            maxRadius: getSunRadius() * (6 + layer * 2.5)
+                        });
+                    }
+                    const ringMat = createEnergyGlowMaterial(0xffffff, 0.7, THREE.DoubleSide);
+                    const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 1.2, 64), ringMat);
+                    ring.position.set(impactPos.x, impactPos.y, impactPos.z);
+                    ring.lookAt(impactPos.x + 1, impactPos.y, impactPos.z);
+                    scene.add(ring);
+                    shockwaves.push({
+                        mesh: ring, age: 0, maxAge: 1.1, expandSpeed: 220, maxRadius: getSunRadius() * 8,
+                        isRing: true, baseOpacity: 0.72
+                    });
+                    spawnDebris(victim, impactPos, { kind: 'plasma', countMul: 4.8, speedMul: 2.6 });
+                }
 
-                    // 伤害按约化质量在双方上的分配：小质量天体承受更大比例冲击能
-                    const damageA = impactEnergy * ENERGY_TO_DAMAGE * (m2 / totalM);
-                    const damageB = impactEnergy * ENERGY_TO_DAMAGE * (m1 / totalM);
+                function shockwaveOpacityFade(t, baseOpacity) {
+                    const expFade = Math.exp(-t * 5.2);
+                    return baseOpacity * expFade * expFade * (1 - t * 0.35);
+                }
 
-                    const mx = (planetA.body.position.x + planetB.body.position.x) * 0.5;
-                    const my = (planetA.body.position.y + planetB.body.position.y) * 0.5;
-                    const mz = (planetA.body.position.z + planetB.body.position.z) * 0.5;
-                    const impactPos = { x: mx, y: my, z: mz };
+                function updateShockwaves(dt) {
+                    for (let i = shockwaves.length - 1; i >= 0; i--) {
+                        const sw = shockwaves[i];
+                        sw.age += dt;
+                        const t = Math.min(1, sw.age / sw.maxAge);
+                        const radius = 2 + sw.expandSpeed * sw.age;
+                        const capped = Math.min(radius, sw.maxRadius);
+                        const baseOp = sw.baseOpacity !== undefined ? sw.baseOpacity : 0.7;
+                        const op = shockwaveOpacityFade(t, baseOp);
+                        if (sw.isRing) {
+                            sw.mesh.scale.set(capped, capped, capped);
+                            sw.mesh.material.opacity = op;
+                        } else {
+                            sw.mesh.scale.setScalar(capped);
+                            sw.mesh.material.opacity = op;
+                        }
+                        if (sw.age >= sw.maxAge) {
+                            scene.remove(sw.mesh);
+                            sw.mesh.geometry.dispose();
+                            sw.mesh.material.dispose();
+                            shockwaves.splice(i, 1);
+                        }
+                    }
+                }
 
-                    applyDamageToPlanet(planetA, damageA, impactPos);
-                    applyDamageToPlanet(planetB, damageB, impactPos);
+                function removeFromGravity(entity) {
+                    const idx = gravityBodies.indexOf(entity);
+                    if (idx !== -1) gravityBodies.splice(idx, 1);
+                }
+
+                function resolveCollision(a, b, impactEnergy) {
+                    const m1 = a.body.mass, m2 = b.body.mass, total = m1 + m2;
+                    const dmgA = impactEnergy * ENERGY_TO_DAMAGE * (m2 / total);
+                    const dmgB = impactEnergy * ENERGY_TO_DAMAGE * (m1 / total);
+                    const impactPos = {
+                        x: (a.body.position.x + b.body.position.x) * 0.5,
+                        y: (a.body.position.y + b.body.position.y) * 0.5,
+                        z: (a.body.position.z + b.body.position.z) * 0.5
+                    };
+                    const gasGas = a.state === 'gas' && b.state === 'gas';
+                    const gasHit = a.state === 'gas' || b.state === 'gas';
+                    if (gasGas && impactEnergy > 8) {
+                        spawnDebris(a, impactPos, { kind: 'gas', countMul: 2.2, speedMul: 1.35 });
+                        spawnDebris(b, impactPos, { kind: 'gas', countMul: 2.2, speedMul: 1.35 });
+                    } else if (gasHit && impactEnergy > 12) {
+                        if (a.state === 'gas') spawnDebris(a, impactPos, { kind: 'gas', countMul: 1.6, speedMul: 1.25 });
+                        if (b.state === 'gas') spawnDebris(b, impactPos, { kind: 'gas', countMul: 1.6, speedMul: 1.25 });
+                    }
+                    applyDamageToEntity(a, dmgA, impactPos);
+                    applyDamageToEntity(b, dmgB, impactPos);
                 }
 
                 function tryCollisionDamage(bodyA, bodyB) {
-                    const planetA = getPlanetFromBody(bodyA);
-                    const planetB = getPlanetFromBody(bodyB);
-                    if (!planetA || !planetB || planetA === planetB) return;
-
-                    const key = collisionPairKey(bodyA.id, bodyB.id);
+                    const entA = getDamageableFromBody(bodyA);
+                    const entB = getDamageableFromBody(bodyB);
+                    if (!entA || !entB) return;
+                    const key = bodyA.id < bodyB.id ? bodyA.id + '|' + bodyB.id : bodyB.id + '|' + bodyA.id;
                     if (collisionPairCooldowns.has(key)) return;
-
-                    const ra = planetA.radius;
-                    const rb = planetB.radius;
+                    const ra = entA.radius, rb = entB.radius;
                     const dx = bodyA.position.x - bodyB.position.x;
                     const dy = bodyA.position.y - bodyB.position.y;
                     const dz = bodyA.position.z - bodyB.position.z;
                     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    if (dist > ra + rb + 0.35) return;
-
-                    const vApproach = getApproachSpeed(bodyA, bodyB);
-                    const impactEnergy = computeImpactEnergy(bodyA.mass, bodyB.mass, vApproach);
-                    if (impactEnergy <= 0) return;
-
+                    if (dist > ra + rb + 0.5) return;
+                    const E = computeImpactEnergy(bodyA.mass, bodyB.mass, getApproachSpeed(bodyA, bodyB));
+                    if (E <= 0) return;
                     collisionPairCooldowns.set(key, COLLISION_COOLDOWN);
-                    resolvePlanetCollision(planetA, planetB, impactEnergy);
+                    resolveCollision(entA, entB, E);
                 }
 
                 function checkMomentumCollisions(dt) {
@@ -698,34 +1121,47 @@
                         if (next <= 0) collisionPairCooldowns.delete(key);
                         else collisionPairCooldowns.set(key, next);
                     });
-
                     for (let i = 0; i < planets.length; i++) {
                         for (let j = i + 1; j < planets.length; j++) {
-                            const a = planets[i];
-                            const b = planets[j];
+                            const a = planets[i], b = planets[j];
                             if (a.isSun || b.isSun || a.burning || b.burning) continue;
                             tryCollisionDamage(a.body, b.body);
+                        }
+                    }
+                    for (let i = 0; i < moons.length; i++) {
+                        for (let j = i + 1; j < moons.length; j++) {
+                            if (moons[i].burning || moons[j].burning) continue;
+                            tryCollisionDamage(moons[i].body, moons[j].body);
+                        }
+                    }
+                    for (let i = 0; i < planets.length; i++) {
+                        const p = planets[i];
+                        if (p.isSun || p.burning) continue;
+                        for (let j = 0; j < moons.length; j++) {
+                            const m = moons[j];
+                            if (m.burning) continue;
+                            tryCollisionDamage(p.body, m.body);
                         }
                     }
                 }
 
                 world.addEventListener('beginContact', function(evt) {
-                    const bi = evt.contact.bi;
-                    const bj = evt.contact.bj;
-                    tryCollisionDamage(bi, bj);
+                    tryCollisionDamage(evt.contact.bi, evt.contact.bj);
                 });
 
                 function shatterPlanet(planet, impactPos) {
                     if (planet.burning) return;
-                    spawnDebris(planet, impactPos);
-                    destroyPlanet(planet, 'shatter');
+                    const kind = planet.state === 'gas' ? 'gas' : 'solid';
+                    spawnDebris(planet, impactPos, { kind, countMul: planet.state === 'gas' ? 2.5 : 1.2, speedMul: 1.15 });
+                    destroyEntity(planet, 'shatter', { impactPos });
                 }
 
-                function destroyPlanet(planet, mode) {
-                    if (planet.burning) return;
-                    planet.burning = true;
-
-                    if (planet === selectedPlanet) {
+                function destroyEntity(entity, mode, opts) {
+                    if (entity.burning) return;
+                    const options = opts || {};
+                    removeSolarAblation(entity);
+                    entity.burning = true;
+                    if (entity === selectedPlanet) {
                         hideAimVisual();
                         selectedPlanet = null;
                         isDragging = false;
@@ -734,17 +1170,31 @@
                         controls.enabled = true;
                         renderer.domElement.style.cursor = 'default';
                     }
-
-                    teleportCooldowns.delete(planet);
-                    world.removeBody(planet.body);
-
+                    teleportCooldowns.delete(entity);
+                    removeFromGravity(entity);
+                    world.removeBody(entity.body);
                     const isShatter = mode === 'shatter';
+                    const isBurn = mode === 'burn';
+                    if (isBurn && options.impactPos && !options.mega) {
+                        spawnDebris(entity, options.impactPos, {
+                            kind: entity.state === 'gas' ? 'plasma' : 'solid',
+                            countMul: entity.state === 'gas' ? 1.8 : 0.7,
+                            speedMul: 1.1
+                        });
+                    }
+                    const burnLife = options.mega ? 0.95 : isBurn ? 0.55 : 0.35;
                     burningPlanets.push({
-                        planet,
-                        life: isShatter ? 0.35 : 0.6,
-                        maxLife: isShatter ? 0.35 : 0.6,
-                        mode: isShatter ? 'shatter' : 'burn'
+                        planet: entity, life: burnLife, maxLife: burnLife,
+                        mode: isShatter ? 'shatter' : 'burn', mega: !!options.mega
                     });
+                    if (entity.isMoon) {
+                        const mi = moons.indexOf(entity);
+                        if (mi !== -1) moons.splice(mi, 1);
+                        if (entity.parent && entity.parent.moons) {
+                            const pi = entity.parent.moons.indexOf(entity);
+                            if (pi !== -1) entity.parent.moons.splice(pi, 1);
+                        }
+                    }
                 }
 
                 function updateBurningPlanets(dt) {
@@ -752,57 +1202,151 @@
                         const burn = burningPlanets[i];
                         burn.life -= dt;
                         const t = 1 - burn.life / burn.maxLife;
-                        const scale = 1 + t * (burn.mode === 'shatter' ? 1.8 : 2.5);
-                        burn.planet.mesh.scale.setScalar(scale);
-                        const emissive = burn.mode === 'shatter' ? 0xffaa44 : 0xff4400;
-                        burn.planet.mesh.material.emissive.setHex(emissive);
-                        burn.planet.mesh.material.emissiveIntensity = 1.5 * (1 - t);
+                        burn.planet.mesh.scale.setScalar((burn.planet.radius / burn.planet.baseRadius) * (1 + t * 1.8));
+                        const emissiveColor = burn.mode === 'shatter' ? 0xffaa44 : burn.mega ? 0xffee88 : 0xff4400;
+                        burn.planet.mesh.material.emissive.setHex(emissiveColor);
+                        burn.planet.mesh.material.emissiveIntensity = (burn.mega ? 3.2 : 1.5) * (1 - t);
                         burn.planet.mesh.material.opacity = Math.max(0, 1 - t * 1.2);
                         burn.planet.mesh.material.transparent = true;
-
                         if (burn.life <= 0) {
                             scene.remove(burn.planet.mesh);
-                            const idx = planets.indexOf(burn.planet);
-                            if (idx !== -1) planets.splice(idx, 1);
+                            if (!burn.planet.isMoon) {
+                                const idx = planets.indexOf(burn.planet);
+                                if (idx !== -1) planets.splice(idx, 1);
+                            }
                             burningPlanets.splice(i, 1);
                         }
                     }
                 }
 
+                function updateDebris(dt) {
+                    for (let i = debrisPieces.length - 1; i >= 0; i--) {
+                        const d = debrisPieces[i];
+                        d.life -= dt;
+                        const px = d.body.position.x;
+                        const py = d.body.position.y;
+                        const pz = d.body.position.z;
+
+                        if (d.kind === 'plasma') {
+                            d.flarePhase += dt * (d.flareFreq || 4);
+                            _flareRadial.set(px, py, pz);
+                            const rLen = _flareRadial.length();
+                            if (rLen > 0.01) {
+                                _flareRadial.multiplyScalar(1 / rLen);
+                                _flareTangent.set(-_flareRadial.z, 0.12, _flareRadial.x).normalize();
+                                const swirl = (d.swirlAmp || 35) * Math.sin(d.flarePhase) * dt;
+                                const lift = Math.sin(d.flarePhase * 1.73) * 18 * dt;
+                                d.body.velocity.x += _flareTangent.x * swirl - _flareRadial.x * 6 * dt;
+                                d.body.velocity.y += lift;
+                                d.body.velocity.z += _flareTangent.z * swirl - _flareRadial.z * 6 * dt;
+                            }
+                        }
+
+                        d.mesh.position.copy(d.body.position);
+                        d.mesh.quaternion.copy(d.body.quaternion);
+                        if (d.spin) {
+                            d.mesh.rotation.x += d.spin * dt * 3;
+                            d.mesh.rotation.y += d.spin * dt * 2;
+                        }
+                        const fade = 1 - d.life / d.maxLife;
+                        const isGasLike = d.kind === 'gas' || d.kind === 'plasma' || d.kind === 'roche';
+                        const baseOp = d.kind === 'plasma' ? 0.75 : d.kind === 'gas' ? 0.28 : 0.85;
+                        if (d.kind === 'plasma') {
+                            d.mesh.material.opacity = Math.max(0, baseOp * Math.exp(-fade * 3.5) * (1 - fade * 0.4));
+                        } else {
+                            d.mesh.material.opacity = Math.max(0, baseOp * (1 - fade * fade));
+                        }
+                        d.mesh.material.transparent = true;
+                        if (isGasLike && d.sizeScale) {
+                            d.mesh.scale.setScalar(d.sizeScale * (1 + fade * (d.kind === 'plasma' ? 0.55 : 0.35)));
+                        }
+                        if (d.life <= 0) {
+                            disposeDebrisPiece(d);
+                            debrisPieces.splice(i, 1);
+                        }
+                    }
+                }
+
+                function tryIngestBySun(entity) {
+                    if (entity.burning || entity.isSun || entity.solarAblation || entity.orbitMode) return;
+                    if (entity === selectedPlanet) return;
+                    const sr = getSunRadius();
+                    const dist = Math.sqrt(
+                        entity.body.position.x ** 2 +
+                        entity.body.position.y ** 2 +
+                        entity.body.position.z ** 2
+                    );
+                    if (dist >= sr + entity.radius * 0.35) return;
+                    beginSolarAblation(entity);
+                }
+
                 function checkSunIncineration() {
                     planets.forEach(p => {
-                        if (p.isSun || p === selectedPlanet || p.burning) return;
-
-                        const pr = p.mesh.geometry.parameters.radius;
-                        const dx = p.body.position.x;
-                        const dy = p.body.position.y;
-                        const dz = p.body.position.z;
-                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-                        if (dist < SUN_RADIUS + pr * 0.65) {
-                            destroyPlanet(p, 'burn');
+                        if (p.isSun) return;
+                        tryIngestBySun(p);
+                    });
+                    moons.forEach(m => tryIngestBySun(m));
+                    for (let i = 0; i < asteroids.length; i++) {
+                        const a = asteroids[i];
+                        if (!a.scattered) continue;
+                        const dist = Math.sqrt(a.body.position.x ** 2 + a.body.position.y ** 2 + a.body.position.z ** 2);
+                        if (dist < getSunRadius() + a.radius * 0.4) {
+                            accreteMassOntoSun(a.body.mass * 0.3);
+                            scene.remove(a.mesh);
+                            world.removeBody(a.body);
+                            asteroids.splice(i, 1);
+                            i--;
                         }
+                    }
+                }
+
+                function teleportThroughWormhole(planet) {
+                    const wh = wormholePair.white.position;
+                    _whOutward.copy(wh);
+                    if (_whOutward.lengthSq() < 1e-8) _whOutward.set(0, 0, 1);
+                    else _whOutward.normalize();
+                    const spawnDist = WHITE_HOLE_SPAWN_OFFSET;
+                    planet.orbitMode = false;
+                    planet.body.type = CANNON.Body.DYNAMIC;
+                    planet.body.position.set(
+                        wh.x + _whOutward.x * spawnDist,
+                        wh.y + _whOutward.y * spawnDist,
+                        wh.z + _whOutward.z * spawnDist
+                    );
+                    const speed = Math.max(planet.body.velocity.length(), 55);
+                    planet.body.velocity.set(_whOutward.x * speed, _whOutward.y * speed, _whOutward.z * speed);
+                    planet.mesh.position.copy(planet.body.position);
+                    teleportCooldowns.set(planet, TELEPORT_COOLDOWN);
+                    syncMoonsToParent(planet, true);
+                }
+
+                function checkWormholeTeleports(dt) {
+                    const bh = wormholePair.black.position;
+                    teleportCooldowns.forEach((time, p) => {
+                        const next = time - dt;
+                        if (next <= 0) teleportCooldowns.delete(p);
+                        else teleportCooldowns.set(p, next);
+                    });
+                    planets.forEach(p => {
+                        if (p.isSun || p.orbitMode || p === selectedPlanet || p.burning || teleportCooldowns.has(p)) return;
+                        const dx = p.body.position.x - bh.x, dy = p.body.position.y - bh.y, dz = p.body.position.z - bh.z;
+                        if (Math.sqrt(dx * dx + dy * dy + dz * dz) < WORMHOLE_CAPTURE_RADIUS + p.radius) teleportThroughWormhole(p);
                     });
                 }
 
                 function updateSunVisual(elapsed) {
-                    if (!sunMeshRef) return;
+                    if (!sunMeshRef || !sunEntity) return;
+                    const baseScale = sunEntity.radius / sunEntity.baseSunRadius;
                     const pulse = 1 + Math.sin(elapsed * 2.2) * 0.04;
-                    sunMeshRef.scale.setScalar(pulse);
-                    sunLight.intensity = 2.5 + Math.sin(elapsed * 3) * 0.5;
+                    sunMeshRef.scale.setScalar(baseScale * pulse);
+                    const baseLight = 2.5 + Math.log1p(sunEntity.mass / sunEntity.baseSunMass) * 1.2;
+                    sunLight.intensity = baseLight + Math.sin(elapsed * 3) * 0.5;
                 }
 
                 function updateWormholeVisuals(elapsed) {
-                    if (wormholePair.black.disk) {
-                        wormholePair.black.disk.rotation.z += 0.025;
-                        wormholePair.black.outerDisk.rotation.z -= 0.015;
-                    }
+                    if (wormholePair.black.disk) wormholePair.black.disk.rotation.z += 0.025;
                     if (wormholePair.white.core) {
-                        const pulse = 0.85 + Math.sin(elapsed * 4) * 0.15;
-                        wormholePair.white.core.scale.setScalar(pulse);
-                        wormholePair.white.glow.scale.setScalar(1 + Math.sin(elapsed * 3) * 0.08);
-                        wormholePair.white.ring.rotation.z += 0.012;
-                        wormholePair.white.light.intensity = 1.8 + Math.sin(elapsed * 5) * 0.6;
+                        wormholePair.white.core.scale.setScalar(0.85 + Math.sin(elapsed * 4) * 0.15);
                         if (wormholePair.white.repulseField) {
                             wormholePair.white.repulseField.rotation.y += 0.004;
                             wormholePair.white.repulseField.material.opacity = 0.03 + Math.sin(elapsed * 2) * 0.015;
@@ -810,203 +1354,86 @@
                     }
                 }
 
-                function teleportThroughWormhole(planet) {
-                    _whPos.copy(wormholePair.white.position);
-                    const speed = Math.max(planet.body.velocity.length(), 30);
-
-                    _ejectDir.copy(_whPos).normalize();
-                    if (_ejectDir.lengthSq() < 0.001) {
-                        _ejectDir.set(0, 0, 1);
-                    }
-
-                    planet.orbitMode = false;
-                    planet.body.type = CANNON.Body.DYNAMIC;
-
-                    planet.body.position.set(_whPos.x, _whPos.y, _whPos.z);
-                    planet.body.velocity.set(
-                        _ejectDir.x * speed,
-                        _ejectDir.y * speed,
-                        _ejectDir.z * speed
-                    );
-                    planet.body.angularVelocity.set(
-                        (Math.random() - 0.5) * 4,
-                        (Math.random() - 0.5) * 4,
-                        (Math.random() - 0.5) * 4
-                    );
-                    planet.mesh.position.copy(planet.body.position);
-
-                    planet.mesh.material.emissive.setHex(0xffffff);
-                    planet.mesh.material.emissiveIntensity = 1.5;
-                    setTimeout(() => {
-                        if (planet.mesh && planet.mesh.material) {
-                            planet.mesh.material.emissive.setHex(0x000000);
-                            planet.mesh.material.emissiveIntensity = 0;
-                        }
-                    }, 300);
-
-                    teleportCooldowns.set(planet, TELEPORT_COOLDOWN);
-                }
-
-                function checkWormholeTeleports(dt) {
-                    _bhPos.copy(wormholePair.black.position);
-
-                    teleportCooldowns.forEach((time, planet) => {
-                        const next = time - dt;
-                        if (next <= 0) teleportCooldowns.delete(planet);
-                        else teleportCooldowns.set(planet, next);
-                    });
-
-                    planets.forEach(p => {
-                        if (p.isSun || p === selectedPlanet || p.burning || teleportCooldowns.has(p)) return;
-
-                        const pr = p.mesh.geometry.parameters.radius;
-                        const dx = p.body.position.x - _bhPos.x;
-                        const dy = p.body.position.y - _bhPos.y;
-                        const dz = p.body.position.z - _bhPos.z;
-                        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-                        if (dist < WORMHOLE_CAPTURE_RADIUS + pr * 0.5) {
-                            teleportThroughWormhole(p);
-                        }
-                    });
-                }
-
                 // ==========================================
-                // 小行星带（地球与火星轨道之间，可被撞散，不可拖动）
+                // 小行星带
                 // ==========================================
                 const asteroids = [];
-                const ASTEROID_BELT_INNER = 53;
-                const ASTEROID_BELT_OUTER = 62;
-                const ASTEROID_COUNT = 160;
-                const ASTEROID_MAX_RANGE = 600;
+                const EARTH_ORBIT = 94;
+                const MARS_ORBIT = 114;
+                const ASTEROID_BELT_INNER = EARTH_ORBIT + (MARS_ORBIT - EARTH_ORBIT) * 0.35;
+                const ASTEROID_BELT_OUTER = EARTH_ORBIT + (MARS_ORBIT - EARTH_ORBIT) * 0.85;
+                const ASTEROID_COUNT = 140;
+                const ASTEROID_MAX_RANGE = UNIVERSE_EXTENT;
                 const asteroidGeo = new THREE.IcosahedronGeometry(1, 0);
-                const asteroidMat = new THREE.MeshStandardMaterial({
-                    color: 0x9b8d7a, roughness: 0.95, metalness: 0.05
-                });
-                const _astSunForce = new CANNON.Vec3();
+                const asteroidMat = new THREE.MeshStandardMaterial({ color: 0x9b8d7a, roughness: 0.95, metalness: 0.05 });
 
                 function createAsteroidBelt() {
                     for (let i = 0; i < ASTEROID_COUNT; i++) {
                         const angle = Math.random() * Math.PI * 2;
                         const dist = ASTEROID_BELT_INNER + Math.random() * (ASTEROID_BELT_OUTER - ASTEROID_BELT_INNER);
-                        const radius = 0.22 + Math.random() * 0.5;
-                        const yJitter = (Math.random() - 0.5) * 4;
-
+                        const radius = EARTH_RADIUS * (0.06 + Math.random() * 0.14);
+                        const yJitter = (Math.random() - 0.5) * 3;
                         const mesh = new THREE.Mesh(asteroidGeo, asteroidMat);
                         mesh.scale.setScalar(radius);
-                        mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
                         scene.add(mesh);
-
                         const body = new CANNON.Body({ mass: Math.max(radius * 2, 0.4), material: physicsMaterial });
                         body.addShape(new CANNON.Sphere(radius));
                         body.type = CANNON.Body.KINEMATIC;
-                        const x = dist * Math.cos(angle);
-                        const z = dist * Math.sin(angle);
-                        body.position.set(x, yJitter, z);
+                        body.position.set(dist * Math.cos(angle), yJitter, dist * Math.sin(angle));
                         world.addBody(body);
-
-                        const speed = Math.sqrt((G * SUN_MASS) / dist);
+                        const speed = circularOrbitSpeed(getSunMass(), dist, true);
                         asteroids.push({
-                            mesh, body, radius,
-                            orbitDist: dist,
-                            orbitAngle: angle,
-                            orbitY: yJitter,
-                            orbitSpeed: speed / dist,
-                            spin: new THREE.Vector3(
-                                (Math.random() - 0.5) * 0.05,
-                                (Math.random() - 0.5) * 0.05,
-                                (Math.random() - 0.5) * 0.05
-                            ),
-                            scattered: false
+                            mesh, body, radius, orbitDist: dist, orbitAngle: angle, orbitY: yJitter,
+                            orbitSpeed: speed / dist, scattered: false,
+                            spin: new THREE.Vector3((Math.random() - 0.5) * 0.05, (Math.random() - 0.5) * 0.05, (Math.random() - 0.5) * 0.05)
                         });
                     }
                 }
 
-                // 用一圈极淡的标记带提示小行星带区域
-                function createAsteroidBandVisual() {
-                    const bandGeo = new THREE.RingGeometry(ASTEROID_BELT_INNER - 0.5, ASTEROID_BELT_OUTER + 0.5, 96);
-                    const bandMat = new THREE.MeshBasicMaterial({
-                        color: 0x8a7a66, transparent: true, opacity: 0.05, side: THREE.DoubleSide
-                    });
-                    const band = new THREE.Mesh(bandGeo, bandMat);
-                    band.rotation.x = Math.PI / 2;
-                    scene.add(band);
-                }
-
-                createAsteroidBandVisual();
+                const band = new THREE.Mesh(
+                    new THREE.RingGeometry(ASTEROID_BELT_INNER - 1, ASTEROID_BELT_OUTER + 1, 96),
+                    new THREE.MeshBasicMaterial({ color: 0x8a7a66, transparent: true, opacity: 0.05, side: THREE.DoubleSide })
+                );
+                band.rotation.x = Math.PI / 2;
+                scene.add(band);
                 createAsteroidBelt();
 
                 function scatterAsteroid(a, sourceBody) {
                     a.scattered = true;
                     a.body.type = CANNON.Body.DYNAMIC;
-
                     const dx = a.body.position.x - sourceBody.position.x;
                     const dy = a.body.position.y - sourceBody.position.y;
                     const dz = a.body.position.z - sourceBody.position.z;
                     const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
                     const sv = sourceBody.velocity;
-                    const srcSpeed = Math.sqrt(sv.x * sv.x + sv.y * sv.y + sv.z * sv.z);
-                    const kick = Math.max(srcSpeed * 0.5, 25) + Math.random() * 15;
-
-                    a.body.velocity.set(
-                        (dx / len) * kick + sv.x * 0.35,
-                        (dy / len) * kick + sv.y * 0.35 + (Math.random() - 0.5) * 12,
-                        (dz / len) * kick + sv.z * 0.35
-                    );
-                    a.body.angularVelocity.set(
-                        (Math.random() - 0.5) * 14,
-                        (Math.random() - 0.5) * 14,
-                        (Math.random() - 0.5) * 14
-                    );
+                    const kick = Math.max(Math.sqrt(sv.x ** 2 + sv.y ** 2 + sv.z ** 2) * 0.5, 30) + Math.random() * 15;
+                    a.body.velocity.set((dx / len) * kick + sv.x * 0.35, (dy / len) * kick + sv.y * 0.35, (dz / len) * kick + sv.z * 0.35);
                 }
 
-                // 只有被发射(自由飞行)的星球才能撞散小行星
                 function checkAsteroidScatter() {
                     planets.forEach(p => {
-                        if (p.isSun || p.burning || p.orbitMode) return;
-                        if (p === selectedPlanet && isDragging) return;
-
-                        const pr = p.mesh.geometry.parameters.radius;
-                        const px = p.body.position.x;
-                        const py = p.body.position.y;
-                        const pz = p.body.position.z;
-
+                        if (p.isSun || p.burning || p.orbitMode || (p === selectedPlanet && isDragging)) return;
                         for (let i = 0; i < asteroids.length; i++) {
                             const a = asteroids[i];
                             if (a.scattered) continue;
-                            const dx = px - a.body.position.x;
-                            const dy = py - a.body.position.y;
-                            const dz = pz - a.body.position.z;
-                            const rr = pr + a.radius + 0.5;
-                            if (dx * dx + dy * dy + dz * dz < rr * rr) {
-                                scatterAsteroid(a, p.body);
-                            }
+                            const dx = p.body.position.x - a.body.position.x;
+                            const dy = p.body.position.y - a.body.position.y;
+                            const dz = p.body.position.z - a.body.position.z;
+                            const rr = p.radius + a.radius + 0.5;
+                            if (dx * dx + dy * dy + dz * dz < rr * rr) scatterAsteroid(a, p.body);
                         }
                     });
                 }
 
-                function updateAsteroidsPhysics(dt) {
+                function updateAsteroidsOrbital(dt) {
                     for (let i = 0; i < asteroids.length; i++) {
                         const a = asteroids[i];
-                        if (!a.scattered) {
-                            a.orbitAngle += a.orbitSpeed * dt;
-                            const d = a.orbitDist;
-                            const x = d * Math.cos(a.orbitAngle);
-                            const z = d * Math.sin(a.orbitAngle);
-                            const speed = Math.sqrt((G * SUN_MASS) / d);
-                            a.body.position.set(x, a.orbitY, z);
-                            a.body.velocity.set(-speed * Math.sin(a.orbitAngle), 0, speed * Math.cos(a.orbitAngle));
-                        } else {
-                            _astSunForce.set(0, 0, 0);
-                            sunBodyRef.position.vsub(a.body.position, _astSunForce);
-                            const d2 = _astSunForce.lengthSquared();
-                            if (d2 > 0.5) {
-                                _astSunForce.normalize();
-                                const strength = (G * a.body.mass * SUN_MASS) / d2;
-                                _astSunForce.scale(strength, _astSunForce);
-                                a.body.applyForce(_astSunForce, a.body.position);
-                            }
-                        }
+                        if (a.scattered) continue;
+                        a.orbitAngle += a.orbitSpeed * dt;
+                        const d = a.orbitDist;
+                        a.body.position.set(d * Math.cos(a.orbitAngle), a.orbitY, d * Math.sin(a.orbitAngle));
+                        const speed = circularOrbitSpeed(getSunMass(), d, true);
+                        a.body.velocity.set(-speed * Math.sin(a.orbitAngle), 0, speed * Math.cos(a.orbitAngle));
                     }
                 }
 
@@ -1014,19 +1441,14 @@
                     for (let i = asteroids.length - 1; i >= 0; i--) {
                         const a = asteroids[i];
                         a.mesh.position.copy(a.body.position);
-
                         if (!a.scattered) {
                             a.mesh.rotation.x += a.spin.x;
                             a.mesh.rotation.y += a.spin.y;
                             a.mesh.rotation.z += a.spin.z;
                         } else {
                             a.mesh.quaternion.copy(a.body.quaternion);
-
-                            const px = a.body.position.x;
-                            const py = a.body.position.y;
-                            const pz = a.body.position.z;
-                            const distSun = Math.sqrt(px * px + py * py + pz * pz);
-                            if (distSun < SUN_RADIUS + a.radius || distSun > ASTEROID_MAX_RANGE) {
+                            const distSun = Math.sqrt(a.body.position.x ** 2 + a.body.position.y ** 2 + a.body.position.z ** 2);
+                            if (distSun < getSunRadius() + a.radius || distSun > ASTEROID_MAX_RANGE) {
                                 scene.remove(a.mesh);
                                 world.removeBody(a.body);
                                 asteroids.splice(i, 1);
@@ -1036,54 +1458,91 @@
                 }
 
                 // ==========================================
-                // 瞄准线 & 力度环可视化
+                // 瞄准 & 引力预测线
                 // ==========================================
+                const PREDICT_STEPS = 28;
+                const predictPositions = new Float32Array(PREDICT_STEPS * 3);
                 const aimLineGeo = new THREE.BufferGeometry();
                 aimLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-                const aimLineMat = new THREE.LineBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.95 });
-                const aimLine = new THREE.Line(aimLineGeo, aimLineMat);
+                const aimLine = new THREE.Line(aimLineGeo, new THREE.LineBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.95 }));
                 aimLine.visible = false;
-                aimLine.renderOrder = 999;
                 aimLine.material.depthTest = false;
                 scene.add(aimLine);
 
-                // 预测方向线（反方向，显示球将飞向哪里）
                 const predictLineGeo = new THREE.BufferGeometry();
-                predictLineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-                const predictLineMat = new THREE.LineBasicMaterial({ color: 0xff6644, transparent: true, opacity: 0.55 });
-                const predictLine = new THREE.Line(predictLineGeo, predictLineMat);
+                predictLineGeo.setAttribute('position', new THREE.BufferAttribute(predictPositions, 3));
+                const predictLine = new THREE.Line(predictLineGeo, new THREE.LineBasicMaterial({ color: 0xff6644, transparent: true, opacity: 0.6 }));
                 predictLine.visible = false;
-                predictLine.renderOrder = 998;
                 predictLine.material.depthTest = false;
                 scene.add(predictLine);
 
-                // 瞄准点（光标位置对应的小球）
-                const aimDotGeo = new THREE.SphereGeometry(0.4, 16, 16);
-                const aimDotMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
-                const aimDot = new THREE.Mesh(aimDotGeo, aimDotMat);
+                const aimDot = new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 16), new THREE.MeshBasicMaterial({ color: 0x00ff88 }));
                 aimDot.visible = false;
-                aimDot.renderOrder = 1000;
                 aimDot.material.depthTest = false;
                 scene.add(aimDot);
 
-                // 力度环（围绕选中星球）
-                const powerRingGeo = new THREE.TorusGeometry(1, 0.15, 16, 48);
-                const powerRing = new THREE.Mesh(powerRingGeo, new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.8 }));
+                const powerRing = new THREE.Mesh(
+                    new THREE.TorusGeometry(1, 0.22, 16, 48),
+                    new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.8 })
+                );
                 powerRing.visible = false;
-                powerRing.renderOrder = 997;
                 powerRing.material.depthTest = false;
                 scene.add(powerRing);
 
-                // ==========================================
-                // 交互逻辑（桌球式拉弓瞄准）
-                // ==========================================
+                const _predPos = new THREE.Vector3();
+                const _predVel = new THREE.Vector3();
+                const _predAcc = new THREE.Vector3();
+
+                function sampleGravityAt(pos) {
+                    _predAcc.set(0, 0, 0);
+                    const sources = [];
+                    if (sunEntity) sources.push({ x: 0, y: 0, z: 0, m: getSunMass() });
+                    planets.forEach(p => {
+                        if (!p.isSun && !p.burning) sources.push({ x: p.body.position.x, y: p.body.position.y, z: p.body.position.z, m: p.body.mass });
+                    });
+                    sources.push({ x: wormholePair.black.position.x, y: 0, z: wormholePair.black.position.z, m: BLACK_HOLE_MASS, wormhole: true });
+                    sources.push({ x: wormholePair.white.position.x, y: 0, z: wormholePair.white.position.z, m: WHITE_HOLE_MASS, wormhole: true });
+                    for (let i = 0; i < sources.length; i++) {
+                        const s = sources[i];
+                        const dx = s.x - pos.x, dy = s.y - pos.y, dz = s.z - pos.z;
+                        const distSq = dx * dx + dy * dy + dz * dz;
+                        const soften = s.wormhole ? WORMHOLE_GRAV_SOFTENING : GRAV_SOFTENING;
+                        const r2 = distSq + soften * soften;
+                        const r = Math.sqrt(r2);
+                        let a = (G * s.m) / r2;
+                        if (s.wormhole && Math.sqrt(distSq) < WORMHOLE_GRAVITY_RANGE) a *= WORMHOLE_PULL_BOOST;
+                        _predAcc.x += (dx / r) * a;
+                        _predAcc.y += (dy / r) * a;
+                        _predAcc.z += (dz / r) * a;
+                    }
+                    return _predAcc;
+                }
+
+                function updateGravityPredictLine(planetPos, shootDir, speed) {
+                    _predPos.copy(planetPos);
+                    _predVel.copy(shootDir).multiplyScalar(speed);
+                    const stepDt = 0.35;
+                    predictPositions[0] = _predPos.x;
+                    predictPositions[1] = _predPos.y;
+                    predictPositions[2] = _predPos.z;
+                    for (let s = 1; s < PREDICT_STEPS; s++) {
+                        const acc = sampleGravityAt(_predPos);
+                        _predVel.add(acc.multiplyScalar(stepDt));
+                        _predPos.add(_predVel.clone().multiplyScalar(stepDt));
+                        predictPositions[s * 3] = _predPos.x;
+                        predictPositions[s * 3 + 1] = _predPos.y;
+                        predictPositions[s * 3 + 2] = _predPos.z;
+                    }
+                    predictLineGeo.attributes.position.needsUpdate = true;
+                    predictLine.visible = true;
+                }
+
                 const raycaster = new THREE.Raycaster();
                 const mouse = new THREE.Vector2();
                 const dragPlane = new THREE.Plane();
                 const _rayOrigin = new THREE.Vector3();
                 const _rayDir = new THREE.Vector3();
                 const _oc = new THREE.Vector3();
-
                 let selectedPlanet = null;
                 let dragStartPos = new THREE.Vector3();
                 let currentPullVec = new THREE.Vector3();
@@ -1093,63 +1552,33 @@
                 let activePointerId = null;
 
                 function getPowerColor(power) {
-                    // green(0.33) -> yellow(0.16) -> red(0)
-                    const hue = (1 - Math.min(power, 1)) * 0.33;
-                    return new THREE.Color().setHSL(hue, 1, 0.5);
+                    return new THREE.Color().setHSL((1 - Math.min(power, 1)) * 0.33, 1, 0.5);
                 }
 
                 function updateAimVisual(cursorWorldPos, planetPos) {
                     if (!selectedPlanet) return;
-
                     currentPullVec.subVectors(cursorWorldPos, planetPos);
                     const pullDist = currentPullVec.length();
-                    const maxPull = 35;
-                    const power = Math.min(pullDist / maxPull, 1.0);
-
-                    // 选中星球视觉放大，营造"抓住"的感觉
-                    const baseRadius = selectedPlanet.mesh.geometry.parameters.radius;
-                    selectedPlanet.mesh.scale.setScalar(1 + power * 0.25);
-
-                    // 力度环
+                    const power = Math.min(pullDist / MAX_PULL, 1);
+                    const baseRadius = selectedPlanet.radius;
+                    selectedPlanet.mesh.scale.setScalar((selectedPlanet.radius / selectedPlanet.baseRadius) * (1 + power * 0.25));
                     powerRing.visible = true;
                     powerRing.position.copy(planetPos);
-                    const ringRadius = baseRadius * 1.8 + power * 6;
-                    powerRing.scale.setScalar(ringRadius);
+                    powerRing.scale.setScalar(baseRadius * 1.8 + power * 8);
                     powerRing.material.color.copy(getPowerColor(power));
-                    powerRing.material.opacity = 0.6 + power * 0.4;
                     powerRing.lookAt(camera.position);
-
-                    // 瞄准线: 星球 → 光标
-                    const positions = aimLine.geometry.attributes.position.array;
-                    positions[0] = planetPos.x; positions[1] = planetPos.y; positions[2] = planetPos.z;
-                    positions[3] = cursorWorldPos.x; positions[4] = cursorWorldPos.y; positions[5] = cursorWorldPos.z;
-                    aimLine.geometry.attributes.position.needsUpdate = true;
+                    const ap = aimLineGeo.attributes.position.array;
+                    ap[0] = planetPos.x; ap[1] = planetPos.y; ap[2] = planetPos.z;
+                    ap[3] = cursorWorldPos.x; ap[4] = cursorWorldPos.y; ap[5] = cursorWorldPos.z;
+                    aimLineGeo.attributes.position.needsUpdate = true;
                     aimLine.visible = true;
-                    aimLine.material.color.copy(getPowerColor(power));
-
-                    // 预测线: 星球 → 发射方向（拉弓反方向）
                     if (pullDist > 0.5) {
                         const shootDir = currentPullVec.clone().normalize().multiplyScalar(-1);
-                        const predictLen = power * 30;
-                        const predictEnd = planetPos.clone().add(shootDir.clone().multiplyScalar(predictLen));
-                        const pPositions = predictLine.geometry.attributes.position.array;
-                        pPositions[0] = planetPos.x; pPositions[1] = planetPos.y; pPositions[2] = planetPos.z;
-                        pPositions[3] = predictEnd.x; pPositions[4] = predictEnd.y; pPositions[5] = predictEnd.z;
-                        predictLine.geometry.attributes.position.needsUpdate = true;
-                        predictLine.visible = true;
-                        predictLine.material.color.copy(getPowerColor(power));
-                    } else {
-                        predictLine.visible = false;
-                    }
-
-                    // 瞄准点
+                        const speed = Math.max(power * MAX_LAUNCH_SPEED, 15);
+                        updateGravityPredictLine(planetPos, shootDir, speed);
+                    } else predictLine.visible = false;
                     aimDot.position.copy(cursorWorldPos);
                     aimDot.visible = true;
-                    aimDot.material.color.copy(getPowerColor(power));
-
-                    // 星球高亮 - 拉得越远越亮
-                    selectedPlanet.mesh.material.emissive.setHex(0x666666);
-                    selectedPlanet.mesh.material.emissiveIntensity = 0.2 + power * 0.8;
                 }
 
                 function hideAimVisual() {
@@ -1157,11 +1586,7 @@
                     predictLine.visible = false;
                     aimDot.visible = false;
                     powerRing.visible = false;
-                    if (selectedPlanet) {
-                        selectedPlanet.mesh.material.emissive.setHex(0x000000);
-                        selectedPlanet.mesh.material.emissiveIntensity = 0;
-                        selectedPlanet.mesh.scale.setScalar(1);
-                    }
+                    if (selectedPlanet) selectedPlanet.mesh.scale.setScalar(selectedPlanet.radius / selectedPlanet.baseRadius);
                 }
 
                 function updateMouseFromEvent(e) {
@@ -1170,69 +1595,43 @@
                     mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
                 }
 
-                // 放大拾取半径：远处的小星球用 mesh 射线几乎点不中
                 function getPlanetAtMouse(e) {
                     updateMouseFromEvent(e);
                     raycaster.setFromCamera(mouse, camera);
                     _rayOrigin.copy(raycaster.ray.origin);
                     _rayDir.copy(raycaster.ray.direction).normalize();
-
-                    let closest = null;
-                    let closestT = Infinity;
-
+                    let closest = null, closestT = Infinity;
                     planets.forEach(p => {
                         if (p.isSun || p.burning) return;
                         const center = p.body.position;
-                        const visualRadius = p.mesh.geometry.parameters.radius;
-                        const pickRadius = Math.max(visualRadius * 5, 4);
-
+                        const pickRadius = Math.max(p.radius * 5, 8);
                         _oc.subVectors(_rayOrigin, center);
                         const b = 2 * _oc.dot(_rayDir);
                         const c = _oc.dot(_oc) - pickRadius * pickRadius;
                         const disc = b * b - 4 * c;
                         if (disc < 0) return;
-
-                        const sqrtDisc = Math.sqrt(disc);
-                        let t = (-b - sqrtDisc) * 0.5;
-                        if (t < 0) t = (-b + sqrtDisc) * 0.5;
+                        const sd = Math.sqrt(disc);
+                        let t = (-b - sd) * 0.5;
+                        if (t < 0) t = (-b + sd) * 0.5;
                         if (t < 0 || t >= closestT) return;
-
                         closestT = t;
                         closest = p;
                     });
-
                     return closest;
                 }
 
                 function getWorldPosAtMouse(e, planetPos) {
                     updateMouseFromEvent(e);
                     raycaster.setFromCamera(mouse, camera);
-
-                    // 使用 XZ 水平面(Y轴朝上)，使拖拽方向与鼠标移动直觉一致
                     const up = new THREE.Vector3(0, 1, 0);
                     const camDir = camera.getWorldDirection(new THREE.Vector3());
-                    const dp = Math.abs(camDir.dot(up)); // 相机方向与垂直方向的点积
-
-                    if (dp > 0.98) {
-                        // 接近顶视角，水平面近乎平行于射线，改用相机朝向平面
-                        dragPlane.setFromNormalAndCoplanarPoint(camDir, planetPos);
-                    } else if (dp < 0.05) {
-                        // 接近平视，水平面近乎与射线方向平行，改用相机朝向平面
-                        dragPlane.setFromNormalAndCoplanarPoint(camDir, planetPos);
-                    } else {
-                        // 正常情况：使用水平面，穿过星球位置
-                        dragPlane.setFromNormalAndCoplanarPoint(up, planetPos);
-                    }
-
+                    const dp = Math.abs(camDir.dot(up));
+                    if (dp > 0.98 || dp < 0.05) dragPlane.setFromNormalAndCoplanarPoint(camDir, planetPos);
+                    else dragPlane.setFromNormalAndCoplanarPoint(up, planetPos);
                     const pt = new THREE.Vector3();
-                    const hit = raycaster.ray.intersectPlane(dragPlane, pt);
-                    if (!hit) return null;
-
-                    // 限制拖拽距离，防止极端值
-                    const maxDrag = 50;
-                    if (pt.distanceTo(planetPos) > maxDrag) {
-                        const dir = pt.clone().sub(planetPos).normalize();
-                        pt.copy(planetPos).add(dir.multiplyScalar(maxDrag));
+                    if (!raycaster.ray.intersectPlane(dragPlane, pt)) return null;
+                    if (pt.distanceTo(planetPos) > MAX_DRAG) {
+                        pt.sub(planetPos).normalize().multiplyScalar(MAX_DRAG).add(planetPos);
                     }
                     return pt;
                 }
@@ -1244,105 +1643,64 @@
                     activePointerId = e.pointerId;
                     controls.enabled = false;
                     renderer.domElement.style.cursor = 'grabbing';
-
-                    if (selectedPlanet.body.mass > 0) {
-                        selectedPlanet.body.type = CANNON.Body.KINEMATIC;
-                        selectedPlanet.body.velocity.set(0, 0, 0);
-                        selectedPlanet.body.angularVelocity.set(0, 0, 0);
-                    }
-
-                    dragStartPos.copy(selectedPlanet.body.position);
-                    selectedPlanet.originalPosition = dragStartPos.clone();
-
+                    planet.body.type = CANNON.Body.KINEMATIC;
+                    planet.body.velocity.set(0, 0, 0);
+                    dragStartPos.copy(planet.body.position);
+                    planet.originalPosition = dragStartPos.clone();
+                    if (planet.moons) planet.moons.forEach(m => { m.body.type = CANNON.Body.KINEMATIC; });
                     const worldPos = getWorldPosAtMouse(e, dragStartPos);
-                    if (worldPos) {
-                        hasValidDragPos = true;
-                        lastValidWorldPos.copy(worldPos);
-                        updateAimVisual(worldPos, selectedPlanet.originalPosition);
-                    }
-
-                    try {
-                        renderer.domElement.setPointerCapture(e.pointerId);
-                    } catch (_) { /* 旧浏览器忽略 */ }
+                    if (worldPos) { hasValidDragPos = true; lastValidWorldPos.copy(worldPos); updateAimVisual(worldPos, planet.originalPosition); }
+                    try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
                 }
 
                 function updatePlanetDrag(e) {
                     if (!isDragging || !selectedPlanet) return;
-
                     const worldPos = getWorldPosAtMouse(e, selectedPlanet.originalPosition);
                     if (worldPos) {
                         hasValidDragPos = true;
                         lastValidWorldPos.copy(worldPos);
-
                         const offset = new THREE.Vector3().subVectors(worldPos, selectedPlanet.originalPosition);
-                        const maxVisualPull = 35;
-                        if (offset.length() > maxVisualPull) {
-                            offset.normalize().multiplyScalar(maxVisualPull);
-                        }
-
-                        const displacedPos = selectedPlanet.originalPosition.clone().add(offset);
-                        selectedPlanet.mesh.position.copy(displacedPos);
-                        selectedPlanet.body.position.copy(displacedPos);
-
+                        if (offset.length() > MAX_PULL) offset.normalize().multiplyScalar(MAX_PULL);
+                        const displaced = selectedPlanet.originalPosition.clone().add(offset);
+                        selectedPlanet.body.position.copy(displaced);
+                        selectedPlanet.mesh.position.copy(displaced);
+                        syncMoonsToParent(selectedPlanet, false);
                         updateAimVisual(worldPos, selectedPlanet.originalPosition);
-                    } else if (hasValidDragPos) {
-                        updateAimVisual(lastValidWorldPos, selectedPlanet.originalPosition);
-                    }
+                    } else if (hasValidDragPos) updateAimVisual(lastValidWorldPos, selectedPlanet.originalPosition);
                 }
 
                 function endPlanetDrag(e) {
                     if (!isDragging || !selectedPlanet) return;
-
                     const origPos = selectedPlanet.originalPosition.clone();
                     let worldPos = getWorldPosAtMouse(e, origPos);
-                    if (!worldPos && hasValidDragPos) {
-                        worldPos = lastValidWorldPos.clone();
-                    }
-
+                    if (!worldPos && hasValidDragPos) worldPos = lastValidWorldPos.clone();
                     if (worldPos && selectedPlanet.body.mass > 0) {
                         const pullVec = new THREE.Vector3().subVectors(worldPos, origPos);
                         const pullDist = pullVec.length();
-                        const minPull = 0.8;
-
-                        if (pullDist >= minPull) {
-                            const shootDir = pullVec.clone().normalize().multiplyScalar(-1);
-                            const maxPull = 35;
-                            const power = Math.min(pullDist / maxPull, 1.0);
-                            const maxSpeed = 250;
-                            const speed = Math.max(power * maxSpeed, 15);
-
-                            selectedPlanet.mesh.position.copy(origPos);
+                        if (pullDist >= 0.8) {
+                            const shootDir = pullVec.normalize().multiplyScalar(-1);
+                            const power = Math.min(pullDist / MAX_PULL, 1);
+                            const speed = Math.max(power * MAX_LAUNCH_SPEED, 18);
                             selectedPlanet.body.position.copy(origPos);
-
+                            selectedPlanet.mesh.position.copy(origPos);
                             selectedPlanet.orbitMode = false;
                             selectedPlanet.body.type = CANNON.Body.DYNAMIC;
-                            selectedPlanet.body.velocity.set(
-                                shootDir.x * speed,
-                                shootDir.y * speed,
-                                shootDir.z * speed
-                            );
-                            selectedPlanet.body.angularVelocity.set(
-                                (Math.random() - 0.5) * 5,
-                                (Math.random() - 0.5) * 5,
-                                (Math.random() - 0.5) * 5
-                            );
+                            selectedPlanet.body.velocity.set(shootDir.x * speed, shootDir.y * speed, shootDir.z * speed);
+                            if (selectedPlanet.moons) selectedPlanet.moons.forEach(m => {
+                                m.body.type = CANNON.Body.DYNAMIC;
+                                syncMoonsToParent(selectedPlanet, true);
+                            });
                         } else {
-                            selectedPlanet.mesh.position.copy(origPos);
                             selectedPlanet.body.position.copy(origPos);
+                            selectedPlanet.mesh.position.copy(origPos);
                             selectedPlanet.orbitAngle = Math.atan2(origPos.z, origPos.x);
                             selectedPlanet.orbitMode = true;
                             selectedPlanet.body.type = CANNON.Body.KINEMATIC;
                             selectedPlanet.body.velocity.set(0, 0, 0);
-                            selectedPlanet.body.angularVelocity.set(0, 0, 0);
+                            syncMoonsToParent(selectedPlanet, true);
                         }
                     }
-
-                    try {
-                        if (activePointerId !== null) {
-                            renderer.domElement.releasePointerCapture(activePointerId);
-                        }
-                    } catch (_) { /* ignore */ }
-
+                    try { if (activePointerId !== null) renderer.domElement.releasePointerCapture(activePointerId); } catch (_) {}
                     hideAimVisual();
                     selectedPlanet = null;
                     isDragging = false;
@@ -1358,34 +1716,23 @@
                         updatePlanetDrag(e);
                         return;
                     }
-                    const planet = getPlanetAtMouse(e);
-                    renderer.domElement.style.cursor = planet ? 'grab' : 'default';
+                    renderer.domElement.style.cursor = getPlanetAtMouse(e) ? 'grab' : 'default';
                 });
-
                 renderer.domElement.addEventListener('pointerdown', (e) => {
                     if (e.button !== 0) return;
-
                     const planet = getPlanetAtMouse(e);
                     if (!planet) return;
-
                     e.preventDefault();
                     e.stopImmediatePropagation();
-
                     beginPlanetDrag(e, planet);
                 }, true);
-
                 renderer.domElement.addEventListener('pointerup', (e) => {
                     if (!isDragging) return;
                     if (activePointerId !== null && e.pointerId !== activePointerId) return;
                     e.preventDefault();
                     endPlanetDrag(e);
                 });
-
-                renderer.domElement.addEventListener('pointercancel', (e) => {
-                    if (!isDragging) return;
-                    endPlanetDrag(e);
-                });
-
+                renderer.domElement.addEventListener('pointercancel', () => { if (isDragging) endPlanetDrag({}); });
                 window.addEventListener('pointerup', (e) => {
                     if (!isDragging) return;
                     if (activePointerId !== null && e.pointerId !== activePointerId) return;
@@ -1397,43 +1744,45 @@
                 // ==========================================
                 const clock = new THREE.Clock();
                 let elapsedTime = 0;
+
                 function animate() {
                     requestAnimationFrame(animate);
                     const dt = Math.min(clock.getDelta(), 0.1);
                     elapsedTime += dt;
 
                     updateOrbitalPlanets(dt);
-                    applySunGravity(dt);
-                    updateAsteroidsPhysics(dt);
-
-                    planets.forEach(p => {
-                        if (p.isSun || p === selectedPlanet || p.burning) return;
-                        applyWhiteHoleRepulsion(p);
-                    });
-
+                    updateAsteroidsOrbital(dt);
+                    applyUniversalGravity();
                     world.step(1 / 60, dt, 3);
+                    updateOrbitalPlanets(dt);
 
                     checkMomentumCollisions(dt);
+                    checkRocheLimitTidalDisruption(dt);
+                    updateSolarAblation(dt);
                     checkSunIncineration();
                     checkAsteroidScatter();
                     checkWormholeTeleports(dt);
                     updateWormholeVisuals(elapsedTime);
                     updateBurningPlanets(dt);
                     updateDebris(dt);
+                    updateShockwaves(dt);
                     updateSunVisual(elapsedTime);
                     syncAsteroids();
 
-                    // 同步 Three.js 和 Cannon.js（拖拽中由指针事件驱动，避免被物理步覆盖）
                     planets.forEach(p => {
                         if (p.burning) return;
                         if (p === selectedPlanet && isDragging) return;
                         p.mesh.position.copy(p.body.position);
                         p.mesh.quaternion.copy(p.body.quaternion);
                     });
+                    moons.forEach(m => {
+                        if (m.burning) return;
+                        if (selectedPlanet && selectedPlanet.moons && selectedPlanet.moons.includes(m) && isDragging) return;
+                        m.mesh.position.copy(m.body.position);
+                        m.mesh.quaternion.copy(m.body.quaternion);
+                    });
 
-                    // 星空缓慢旋转
-                    starMesh.rotation.y += 0.00005;
-
+                    starMesh.rotation.y += 0.00003;
                     controls.update();
                     renderer.render(scene, camera);
                 }
@@ -1448,30 +1797,9 @@
 
             } catch (err) {
                 const errorUI = document.createElement('div');
-                errorUI.style.cssText = `
-                    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                    background: rgba(20, 0, 0, 0.95); border: 2px solid #ff4444; border-radius: 12px;
-                    padding: 30px; color: #fff; text-align: center; font-family: sans-serif;
-                    box-shadow: 0 10px 30px rgba(255, 0, 0, 0.4); z-index: 100; min-width: 300px;
-                `;
-                errorUI.innerHTML = `
-                    <h2 style="color:#ff4444; margin-top:0;">渲染失败</h2>
-                    <p style="font-size: 15px;">网络无法加载 3D 引擎文件或浏览器安全设置拦截了脚本。</p>
-                    <div style="background:#000; padding:12px; color:#00ff00; font-family:monospace; text-align:left; overflow:auto; border-radius:6px; margin: 15px 0;">
-                        <b>错误信息:</b><br>${err.message}
-                    </div>
-                    <p style="color:#aaa; font-size: 13px; margin-bottom:0; line-height:1.6;">
-                        1. 暂时关闭广告拦截插件<br>
-                        2. 检查网络或切换代理/VPN<br>
-                        3. 按 F12 查看控制台
-                    </p>
-                `;
+                errorUI.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(20,0,0,0.95);border:2px solid #ff4444;border-radius:12px;padding:30px;color:#fff;text-align:center;font-family:sans-serif;z-index:100;min-width:300px;';
+                errorUI.innerHTML = '<h2 style="color:#ff4444">渲染失败</h2><p>' + err.message + '</p>';
                 document.body.appendChild(errorUI);
-                const statusEl = document.getElementById('sys-status');
-                if (statusEl) {
-                    statusEl.innerHTML = "引擎加载失败";
-                    statusEl.style.color = "red";
-                }
             }
         };
     </script>
